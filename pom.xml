@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Root pom.xml: Maven is the build tool for every rung of the Seven Rungs to the JVM
+  roadmap. google-java-format runs through Spotless and is enforced at `verify`, so a
+  badly-formatted file fails the build the way a red test would.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.sevenrungs</groupId>
+  <artifactId>seven-rungs-parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <name>Seven Rungs to the JVM</name>
+  <description>A phase-by-phase Maven reactor implementing the Seven Rungs to the JVM roadmap.</description>
+
+  <modules>
+    <!-- one module per phase; phase2..phase7 are added as they are built -->
+    <module>phase1</module>
+    <module>phase1-jcstress</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.release>25</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <google.java.format.version>1.36.1</google.java.format.version>
+    <junit.version>5.11.0</junit.version>
+    <jcstress.version>0.16</jcstress.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <!-- compiles every rung; preview flags added per-module below -->
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.13.0</version>
+        </plugin>
+        <plugin>
+          <!-- `mvn exec:exec` runs a rung's main class in a forked `java` process with real
+               JVM flags (exec:java runs in-process and cannot honor the enable-preview flag) -->
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>exec-maven-plugin</artifactId>
+          <version>3.4.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.3.1</version>
+        </plugin>
+        <plugin>
+          <!-- packages the phase1-jcstress module into a runnable jcstress.jar uber-jar,
+               the way the official jcstress-java-test-archetype does -->
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>3.6.2</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <plugin>
+        <!-- Google Java Format, non-negotiable: fails `mvn verify` on drift -->
+        <groupId>com.diffplug.spotless</groupId>
+        <artifactId>spotless-maven-plugin</artifactId>
+        <version>3.10.2</version>
+        <configuration>
+          <java>
+            <googleJavaFormat>
+              <version>${google.java.format.version}</version>
+              <style>GOOGLE</style>
+            </googleJavaFormat>
+            <removeUnusedImports/>
+          </java>
+        </configuration>
+        <executions>
+          <execution>
+            <!-- `mvn verify` = compile + this check; `mvn spotless:apply` fixes it -->
+            <id>check-google-java-format</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

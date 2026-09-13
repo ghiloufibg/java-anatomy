@@ -1,0 +1,10 @@
+target/
+*.class
+*.jfr
+.idea/
+*.iml
+.vscode/
+.DS_Store
+jcstress-results-*.bin.gz
+results/
+dependency-reduced-pom.xml
