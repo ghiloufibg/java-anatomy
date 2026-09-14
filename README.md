@@ -8,10 +8,11 @@ The whole roadmap has seven phases; this repository currently implements:
 
 - **Phase 1 — Concurrency internals and the Java Memory Model** (`concurrency-jmm`, `concurrency-jmm-jcstress`)
 - **Phase 2 — JVM internals: loading, JIT, escape analysis, GC, bytecode** (`jvm-internals`)
+- **Phase 3 — The Foreign Function & Memory API and native interop** (`native-interop`, `native-interop-bench`)
 
-Phases 3 through 7 (FFM/native interop, language evolution, compiler/tooling craft, production
-JVM engineering, and contributing to OpenJDK) are not built yet; each will land as its own
-module(s) the same way Phases 1 and 2 did.
+Phases 4 through 7 (language evolution, compiler/tooling craft, production JVM engineering, and
+contributing to OpenJDK) are not built yet; each will land as its own module(s) the same way
+Phases 1 through 3 did.
 
 ## Toolchain
 
@@ -40,3 +41,11 @@ watching C2's escape analysis delete an allocation, JOL object-layout/header ins
 phase's exercise: a "GC autopsy kit" — an allocation-heavy workload run under G1, generational ZGC
 and Shenandoah, and a from-scratch parser turning raw `-Xlog:gc*` output into pause histograms,
 concurrent-cycle timelines and heap-occupancy curves.
+
+## Phase 3 — FFM and native interop
+
+See [`native-interop/README.md`](native-interop/README.md) for the three graded examples (a libc downcall, a
+struct-and-upcall `qsort()` binding, a cross-process ring buffer on a mapped file) and
+[`native-interop-bench/README.md`](native-interop-bench/README.md) for the phase's exercise: a hand-written zlib
+wrapper benchmarked against a real JNI baseline with JMH — including a factual correction, found
+while building it, to what the FFM API's `Linker.Option` actually supports on this JDK.

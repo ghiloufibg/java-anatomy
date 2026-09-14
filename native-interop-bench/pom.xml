@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 3 exercise (the JMH half): compares three ways of getting a Java byte[] into a native
+  compress2() call: the graded ZlibCodec (FFM, copies into an off-heap MemorySegment), a JNI
+  baseline using GetPrimitiveArrayCritical/ReleasePrimitiveArrayCritical (JNI's real "critical,
+  zero-copy heap access" primitive - the finalized FFM API has no equivalent, see README.md), and
+  the same JNI baseline's ordinary (non-critical) copying path.
+
+  Kept as its own module, not part of native-interop/src/main, because it needs three things
+  ordinary application code should stay away from: an annotation processor
+  (jmh-generator-annprocess) that rewrites @Benchmark classes at compile time, a small C source
+  file compiled by gcc into a real .so as part of the build, and its own uber-jar packaging - the
+  same three reasons concurrency-jmm-jcstress exists separately from concurrency-jmm.
+
+  This module is NOT wired into `mvn verify`'s test execution the way a real benchmark run would
+  be: JMH forks a JVM per benchmark and a real run takes minutes. `verify` only runs a fast
+  correctness smoke test (ZlibBenchmarksSmokeTest) that all three paths agree byte-for-byte;
+  see README.md for how to actually run the benchmark.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.sevenrungs</groupId>
+    <artifactId>seven-rungs-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>native-interop-bench</artifactId>
+
+  <name>Phase 3 exercise - JMH benchmark vs. JNI baseline</name>
+
+  <dependencies>
+    <dependency>
+      <groupId>dev.sevenrungs</groupId>
+      <artifactId>native-interop</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-core</artifactId>
+      <version>${jmh.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <!-- jmh-generator-annprocess is compile-time only (it rewrites @Benchmark classes into
+             the harness-driven classes JMH actually runs); it is an annotation processor path,
+             not a project dependency, matching JMH's own Maven archetype. The -h flag emits the
+             JNI header for JniZlib's native method, consumed by the gcc execution below. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.openjdk.jmh</groupId>
+              <artifactId>jmh-generator-annprocess</artifactId>
+              <version>${jmh.version}</version>
+            </path>
+          </annotationProcessorPaths>
+          <compilerArgs>
+            <arg>-h</arg>
+            <arg>${project.build.directory}/native-headers</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- Builds libjniz.so straight into target/classes/native, so it is on the classpath for
+             `mvn test`/exec:exec unpackaged, and gets bundled into the shaded benchmarks.jar the
+             same way any other classpath resource would. Bound to process-classes (after compile,
+             so the JNI header from -h already exists; before package, so the .so is there to jar
+             up). -->
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>build-jni-native-lib</id>
+            <phase>process-classes</phase>
+            <goals>
+              <goal>exec</goal>
+            </goals>
+            <configuration>
+              <executable>sh</executable>
+              <arguments>
+                <argument>-c</argument>
+                <!-- One line, no embedded newlines: this whole string is a shell script passed to
+                     `sh -c`, and a bare newline there ends a statement (an earlier version of
+                     this pom wrapped it across lines for readability and broke the build: each
+                     wrapped line ran as its own, mostly nonexistent, command). -->
+                <argument>mkdir -p "${project.build.outputDirectory}/native" &amp;&amp; gcc -shared -fPIC -I"${java.home}/include" -I"${java.home}/include/linux" -I"${project.build.directory}/native-headers" "${project.basedir}/src/main/c/jni_zlib.c" -lz -o "${project.build.outputDirectory}/native/libjniz.so"</argument>
+              </arguments>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <!-- The smoke test drives ZlibCodec and JniZlib directly, both of which call restricted
+             FFM/JNI methods. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- Packages a runnable benchmarks.jar the way JMH's own archetype does, with
+             org.openjdk.jmh.Main as the entry point. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <finalName>benchmarks</finalName>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>org.openjdk.jmh.Main</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

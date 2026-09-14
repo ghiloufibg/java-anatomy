@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 3: The Foreign Function and Memory API and native interop.
+  Every rung here calls a restricted method (Linker.downcallHandle, upcallStub, or a mapped
+  segment), so exec and Surefire both need the enable-native-access flag; on this JDK it is
+  still a warning rather than an error (JEP 472 promises that changes later), but the flag is
+  wired in anyway so a future JDK does not silently break these rungs.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.sevenrungs</groupId>
+    <artifactId>seven-rungs-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>native-interop</artifactId>
+
+  <name>Phase 3 - FFM and native interop</name>
+
+  <properties>
+    <!-- MappedRing's two args: which side to run, and the mapped file both sides must agree on.
+         Each is its own Maven property (not one space-joined string) because exec:exec passes
+         each <argument> through as one argv element with no shell-style splitting. Override with
+         -Dexec.programArgs=produce and, only if running two instances on the same host at once,
+         -Dring.path=/tmp/some-other-file. -->
+    <exec.programArgs></exec.programArgs>
+    <ring.path>/dev/shm/ring.bin</ring.path>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <!-- exec:java cannot fork a real `java` process with a launch-time flag, and every rung
+             here needs the enable-native-access flag at run time (checked when the downcall or
+             upcall handle is actually created, not at class-load time), so exec:exec is used,
+             the same as concurrency-jmm's preview-feature rungs. No runtime deps beyond the JDK,
+             so target/classes alone is a correct classpath. -->
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <configuration>
+          <executable>java</executable>
+          <arguments>
+            <argument>--enable-native-access=ALL-UNNAMED</argument>
+            <argument>-cp</argument>
+            <argument>${project.build.outputDirectory}</argument>
+            <argument>${exec.mainClass}</argument>
+            <argument>${exec.programArgs}</argument>
+            <argument>${ring.path}</argument>
+          </arguments>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

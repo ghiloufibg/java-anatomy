@@ -17,10 +17,12 @@
   <description>A phase-by-phase Maven reactor implementing the Seven Rungs to the JVM roadmap.</description>
 
   <modules>
-    <!-- one module per phase; phase3..phase7 are added as they are built -->
+    <!-- one module per phase; further phases are added as they are built -->
     <module>concurrency-jmm</module>
     <module>concurrency-jmm-jcstress</module>
     <module>jvm-internals</module>
+    <module>native-interop</module>
+    <module>native-interop-bench</module>
   </modules>
 
   <properties>
@@ -31,6 +33,7 @@
     <junit.version>5.11.0</junit.version>
     <jcstress.version>0.16</jcstress.version>
     <jol.version>0.17</jol.version>
+    <jmh.version>1.37</jmh.version>
   </properties>
 
   <dependencyManagement>
