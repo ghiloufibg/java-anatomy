@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 5 exercise: the same allocation-counting profiler, three ways - the ClassFile API, ASM,
+  and Byte Buddy. Kept as its own module, not part of compiler-tooling/src/main, for the same
+  reasons every other benchmark/exercise module in this project is separate: extra dependencies
+  (ASM, Byte Buddy, JMH) an ordinary rung has no business needing, an annotation processor
+  (jmh-generator-annprocess), and its own shaded jar.
+
+  Real dependency-version corrections made while building this (see README.md): ASM 9.7.1 (a
+  natural default) cannot read this project's own JDK 25 class files at all ("Unsupported class
+  file major version 69") - 9.8 is the version that actually works. Byte Buddy 1.15.10 refuses
+  JDK 25 outright unless an experimental flag is set - 1.17.5 supports it natively.
+
+  Like the other benchmark modules, this is NOT wired into `mvn verify`'s test execution beyond a
+  fast correctness smoke test - a real JMH run takes minutes. See README.md for how to actually
+  run it, including the real agent (`-javaagent:...=classfile|asm|bytebuddy`).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.sevenrungs</groupId>
+    <artifactId>seven-rungs-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>compiler-tooling-profilers</artifactId>
+
+  <name>Phase 5 exercise - the same profiler, three ways</name>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm</artifactId>
+      <version>${asm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm-util</artifactId>
+      <version>${asm.version}</version>
+    </dependency>
+    <dependency>
+      <!-- ClassRemapper/SimpleRemapper, used by IsolatedDefinition - see its Javadoc for why
+           in-process class definition needs it, in AllocationBenchmarks (main) as well as tests. -->
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm-commons</artifactId>
+      <version>${asm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>net.bytebuddy</groupId>
+      <artifactId>byte-buddy</artifactId>
+      <version>${bytebuddy.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-core</artifactId>
+      <version>${jmh.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <!-- jmh-generator-annprocess is compile-time only, matching every other JMH module here. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.openjdk.jmh</groupId>
+              <artifactId>jmh-generator-annprocess</artifactId>
+              <version>${jmh.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- One shaded jar carrying BOTH manifest entries: Premain-Class so
+             `-javaagent:profilers.jar=asm` works, and Main-Class so `java -jar profilers.jar`
+             runs the JMH benchmark - a combination real APM agent jars often use. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <finalName>profilers</finalName>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>org.openjdk.jmh.Main</mainClass>
+                  <manifestEntries>
+                    <Premain-Class>dev.sevenrungs.compilertooling.profiler.AllocationAgent</Premain-Class>
+                    <Can-Retransform-Classes>true</Can-Retransform-Classes>
+                  </manifestEntries>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

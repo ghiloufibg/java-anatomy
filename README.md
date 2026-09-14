@@ -10,10 +10,10 @@ The whole roadmap has seven phases; this repository currently implements:
 - **Phase 2 — JVM internals: loading, JIT, escape analysis, GC, bytecode** (`jvm-internals`)
 - **Phase 3 — The Foreign Function & Memory API and native interop** (`native-interop`, `native-interop-bench`)
 - **Phase 4 — Language evolution: patterns, sealed types, Valhalla, the Vector API** (`language-evolution`, `language-evolution-bench`)
+- **Phase 5 — Compiler and tooling craft: processors, agents, bytecode** (`compiler-tooling`, `compiler-tooling-profilers`)
 
-Phases 5 through 7 (compiler/tooling craft, production JVM engineering, and contributing to
-OpenJDK) are not built yet; each will land as its own module(s) the same way Phases 1 through 4
-did.
+Phases 6 and 7 (production JVM engineering, and contributing to OpenJDK) are not built yet; each
+will land as its own module(s) the same way Phases 1 through 5 did.
 
 ## Toolchain
 
@@ -59,3 +59,13 @@ Project Valhalla value class this sandbox cannot build) and
 [`language-evolution-bench/README.md`](language-evolution-bench/README.md) for the phase's exercise: a typed
 interpreter with a sealed AST, evaluated by both a scalar and a Vector API backend, benchmarked
 against each other with JMH.
+
+## Phase 5 — Compiler and tooling craft
+
+See [`compiler-tooling/README.md`](compiler-tooling/README.md) for the three graded examples (an annotation
+processor generating a builder at compile time, a `java.lang.instrument` agent rewriting bytecode
+with the ClassFile API, and forging a class with `invokedynamic` and a hidden class) and
+[`compiler-tooling-profilers/README.md`](compiler-tooling-profilers/README.md) for the phase's exercise: the same
+allocation-counting profiler implemented three times — ClassFile API, ASM, Byte Buddy — including
+real ASM/Byte Buddy version corrections for JDK 25 and a genuine `VerifyError` bug found and fixed
+in the Byte Buddy implementation once tests were redesigned to fork real child JVMs.

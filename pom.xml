@@ -25,6 +25,8 @@
     <module>native-interop-bench</module>
     <module>language-evolution</module>
     <module>language-evolution-bench</module>
+    <module>compiler-tooling</module>
+    <module>compiler-tooling-profilers</module>
   </modules>
 
   <properties>
@@ -36,6 +38,8 @@
     <jcstress.version>0.16</jcstress.version>
     <jol.version>0.17</jol.version>
     <jmh.version>1.37</jmh.version>
+    <asm.version>9.8</asm.version>
+    <bytebuddy.version>1.17.5</bytebuddy.version>
   </properties>
 
   <dependencyManagement>

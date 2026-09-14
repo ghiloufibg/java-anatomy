@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 5: Compiler and tooling craft - processors, agents, bytecode.
+  Every rung here is a stable, unflagged JDK 25 feature (JSR 269 annotation processing, the
+  ClassFile API from JEP 484, invokedynamic and hidden classes), so no compiler or exec flags are
+  needed. TimingAgent needs Premain-Class/Can-Retransform-Classes manifest entries so the built
+  jar works directly as a -javaagent.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.sevenrungs</groupId>
+    <artifactId>seven-rungs-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>compiler-tooling</artifactId>
+
+  <name>Phase 5 - Compiler and tooling craft</name>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <!-- Makes this module's jar directly usable as `-javaagent:compiler-tooling-1.0.0.jar=
+             <prefix>` for TimingAgent, without needing a separate shaded artifact: the module has
+             no runtime dependencies beyond the JDK. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Premain-Class>dev.sevenrungs.compilertooling.TimingAgent</Premain-Class>
+              <Can-Retransform-Classes>true</Can-Retransform-Classes>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
