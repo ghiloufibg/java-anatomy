@@ -9,10 +9,11 @@ The whole roadmap has seven phases; this repository currently implements:
 - **Phase 1 — Concurrency internals and the Java Memory Model** (`concurrency-jmm`, `concurrency-jmm-jcstress`)
 - **Phase 2 — JVM internals: loading, JIT, escape analysis, GC, bytecode** (`jvm-internals`)
 - **Phase 3 — The Foreign Function & Memory API and native interop** (`native-interop`, `native-interop-bench`)
+- **Phase 4 — Language evolution: patterns, sealed types, Valhalla, the Vector API** (`language-evolution`, `language-evolution-bench`)
 
-Phases 4 through 7 (language evolution, compiler/tooling craft, production JVM engineering, and
-contributing to OpenJDK) are not built yet; each will land as its own module(s) the same way
-Phases 1 through 3 did.
+Phases 5 through 7 (compiler/tooling craft, production JVM engineering, and contributing to
+OpenJDK) are not built yet; each will land as its own module(s) the same way Phases 1 through 4
+did.
 
 ## Toolchain
 
@@ -49,3 +50,12 @@ struct-and-upcall `qsort()` binding, a cross-process ring buffer on a mapped fil
 [`native-interop-bench/README.md`](native-interop-bench/README.md) for the phase's exercise: a hand-written zlib
 wrapper benchmarked against a real JNI baseline with JMH — including a factual correction, found
 while building it, to what the FFM API's `Linker.Option` actually supports on this JDK.
+
+## Phase 4 — Language evolution
+
+See [`language-evolution/README.md`](language-evolution/README.md) for the three graded examples (a sealed-type
+algebraic simplifier, Vector API cosine similarity, and the guru rung's honest substitute for a
+Project Valhalla value class this sandbox cannot build) and
+[`language-evolution-bench/README.md`](language-evolution-bench/README.md) for the phase's exercise: a typed
+interpreter with a sealed AST, evaluated by both a scalar and a Vector API backend, benchmarked
+against each other with JMH.

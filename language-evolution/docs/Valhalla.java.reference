@@ -1,0 +1,46 @@
+// Reference only - NOT compiled by this project (this file's extension is .reference, not
+// .java, and it lives under docs/, not src/, specifically so Maven never picks it up).
+//
+// This is the artifact's own Phase 4 guru rung, verbatim, kept for anyone who checks this
+// repository out on a machine with real internet access to jdk.java.net/valhalla and wants to
+// run it for real. It needs a Project Valhalla early-access JDK build (JEP 401's `value record`
+// syntax and `IdentityException` do not exist in mainline JDK 25, and won't until JEP 401 itself
+// ships) with --enable-preview.
+//
+// See language-evolution/README.md for exactly why this could not be built or run in this
+// repository's own sandbox, and see IdentityToday.java (in src/main/java, real and runnable
+// right now) for the closest thing to this rung that stock JDK 25 can actually prove.
+
+// Project Valhalla, JEP 401 "Value Classes and Objects" (preview; needs a Valhalla EA build
+// from jdk.java.net/valhalla or a JDK where JEP 401 has landed, with --enable-preview).
+// A value class gives up identity. Everything you know about ==, synchronized, and
+// object layout changes for these types, which is why it is the last rung of this phase.
+public final class Valhalla {
+    // "value" strips identity: no synchronization, no identity hash, == compares state.
+    value record Complex(double re, double im) {
+        Complex times(Complex o) { return new Complex(re * o.re - im * o.im, re * o.im + im * o.re); }
+    }
+
+    // Nullable by default: a `Complex` field can still be null (JEP 401 keeps null unless
+    // a later JEP adds null-restricted types). Flattening in arrays/fields is a JVM decision
+    // made when the value class is small enough and the field is non-volatile.
+    static final class Signal { Complex[] samples = new Complex[1 << 16]; }
+
+    public static void main(String[] args) {
+        Complex a = new Complex(1, 2), b = new Complex(1, 2);
+        System.out.println(a == b);                        // true: no identity, so == is by value
+        System.out.println(a.equals(b) && a.hashCode() == b.hashCode());
+
+        try { synchronized (a) { } }                       // IdentityException (JEP 401)
+        catch (IdentityException e) { System.out.println("cannot lock a value object: " + e.getMessage()); }
+
+        var s = new Signal();
+        for (int i = 0; i < s.samples.length; i++) s.samples[i] = new Complex(i, -i);
+        // With JOL on a Valhalla build: GraphLayout shows one flat 1 MiB array instead of
+        // 65536 pointers + 65536 24-byte objects scattered across the heap. That is the
+        // whole pitch: "codes like a class, works like an int".
+        System.out.println(s.samples[7].times(s.samples[8]));
+    }
+}
+// Watch-list while this ships: JEP 401 (value classes), the draft JEPs for null-restricted
+// types and enhanced primitive boxing, and valhalla-dev@openjdk.org for the actual decisions.

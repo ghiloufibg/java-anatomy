@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 4 exercise (the JMH half): benchmarks ScalarEvaluator against VectorEvaluator over the
+  same TypedExpr, the exercise's "prove with JMH that the Vector API backend beats the scalar
+  path at realistic sizes" requirement.
+
+  Kept as its own module, not part of language-evolution/src/main, for the same reason
+  concurrency-jmm-jcstress and native-interop-bench are separate: an annotation processor
+  (jmh-generator-annprocess) and its own shaded uber-jar are conventionally kept away from
+  ordinary application code.
+
+  Like the other benchmark modules, this is NOT wired into `mvn verify`'s test execution beyond a
+  fast correctness smoke test - a real JMH run takes minutes. See README.md for how to actually
+  run it.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.sevenrungs</groupId>
+    <artifactId>seven-rungs-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>language-evolution-bench</artifactId>
+
+  <name>Phase 4 exercise - Vector API vs. scalar JMH benchmark</name>
+
+  <dependencies>
+    <dependency>
+      <groupId>dev.sevenrungs</groupId>
+      <artifactId>language-evolution</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-core</artifactId>
+      <version>${jmh.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <!-- jmh-generator-annprocess is compile-time only, matching JMH's own Maven archetype. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.openjdk.jmh</groupId>
+              <artifactId>jmh-generator-annprocess</artifactId>
+              <version>${jmh.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- VectorEvaluator (via language-evolution) still needs the Vector API's enable-modules
+             flag; the smoke test exercises it directly. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>--add-modules jdk.incubator.vector</argLine>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- Packages a runnable benchmarks.jar, same pattern as native-interop-bench. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <finalName>benchmarks</finalName>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>org.openjdk.jmh.Main</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

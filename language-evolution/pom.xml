@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 4: Language evolution - patterns, sealed types, Valhalla, the Vector API.
+  Only Cosine needs a flag (the Vector API is still incubating in JDK 25: the enable-modules
+  flag for jdk.incubator.vector), wired into exec and Surefire the same way every other
+  flag-needing rung in this project is. Everything else here is a final language feature.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.sevenrungs</groupId>
+    <artifactId>seven-rungs-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>language-evolution</artifactId>
+
+  <name>Phase 4 - Language evolution</name>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.openjdk.jol</groupId>
+      <artifactId>jol-core</artifactId>
+      <version>${jol.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <!-- computes this module's runtime classpath (target/classes + jol-core.jar) into a
+             property, the same reason jvm-internals/pom.xml does: exec:exec's forked `java`
+             needs a real -cp, and IdentityToday depends on jol-core at run time. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.11.0</version>
+        <executions>
+          <execution>
+            <id>build-classpath</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>build-classpath</goal>
+            </goals>
+            <configuration>
+              <outputProperty>languageevolution.runtimeClasspath</outputProperty>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <!-- exec:java runs in-process and cannot add a module at JVM launch, so Cosine (and every
+             rung here, for one consistent command) runs via exec:exec. -->
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <configuration>
+          <executable>java</executable>
+          <arguments>
+            <argument>--add-modules</argument>
+            <argument>jdk.incubator.vector</argument>
+            <argument>--add-opens</argument>
+            <argument>java.base/java.lang=ALL-UNNAMED</argument>
+            <!-- JOL's Unsafe-based field-offset lookup (HotspotUnsafe.fieldOffset) refuses record
+                 classes outright on this JDK ("can't get field offset on a record class");
+                 IdentityToday's Complex is a record, so JOL needs its own workaround flag to fall
+                 back to a "magic" offset instead of Unsafe.objectFieldOffset. Confirmed empirically
+                 while writing IdentityTodayTest: this flag alone fixes it. -->
+            <argument>-Djol.magicFieldOffset=true</argument>
+            <argument>-cp</argument>
+            <argument>${project.build.outputDirectory}${path.separator}${languageevolution.runtimeClasspath}</argument>
+            <argument>${exec.mainClass}</argument>
+          </arguments>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>--add-modules jdk.incubator.vector --add-opens java.base/java.lang=ALL-UNNAMED -Djol.magicFieldOffset=true</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

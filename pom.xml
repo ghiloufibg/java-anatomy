@@ -23,6 +23,8 @@
     <module>jvm-internals</module>
     <module>native-interop</module>
     <module>native-interop-bench</module>
+    <module>language-evolution</module>
+    <module>language-evolution-bench</module>
   </modules>
 
   <properties>
