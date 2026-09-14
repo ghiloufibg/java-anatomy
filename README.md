@@ -7,10 +7,11 @@ the HotSpot source as primary sources, not tutorials.
 The whole roadmap has seven phases; this repository currently implements:
 
 - **Phase 1 — Concurrency internals and the Java Memory Model** (`phase1`, `phase1-jcstress`)
+- **Phase 2 — JVM internals: loading, JIT, escape analysis, GC, bytecode** (`phase2`)
 
-Phases 2 through 7 (JVM internals, FFM/native interop, language evolution, compiler/tooling
-craft, production JVM engineering, and contributing to OpenJDK) are not built yet; each will land
-as its own module(s) the same way Phase 1 did.
+Phases 3 through 7 (FFM/native interop, language evolution, compiler/tooling craft, production
+JVM engineering, and contributing to OpenJDK) are not built yet; each will land as its own
+module(s) the same way Phases 1 and 2 did.
 
 ## Toolchain
 
@@ -31,3 +32,11 @@ See [`phase1/README.md`](phase1/README.md) for the three graded examples (store-
 test, an AbstractQueuedSynchronizer-based phase gate, structured concurrency + scoped values) and
 [`phase1-jcstress/README.md`](phase1-jcstress/README.md) for the phase's exercise: a jcstress
 suite plus a hand-rolled writer-preferring read/write lock.
+
+## Phase 2 — JVM internals
+
+See [`phase2/README.md`](phase2/README.md) for the three graded examples (class-loader identity,
+watching C2's escape analysis delete an allocation, JOL object-layout/header inspection) and the
+phase's exercise: a "GC autopsy kit" — an allocation-heavy workload run under G1, generational ZGC
+and Shenandoah, and a from-scratch parser turning raw `-Xlog:gc*` output into pause histograms,
+concurrent-cycle timelines and heap-occupancy curves.

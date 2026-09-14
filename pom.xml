@@ -17,9 +17,10 @@
   <description>A phase-by-phase Maven reactor implementing the Seven Rungs to the JVM roadmap.</description>
 
   <modules>
-    <!-- one module per phase; phase2..phase7 are added as they are built -->
+    <!-- one module per phase; phase3..phase7 are added as they are built -->
     <module>phase1</module>
     <module>phase1-jcstress</module>
+    <module>phase2</module>
   </modules>
 
   <properties>
@@ -29,6 +30,7 @@
     <google.java.format.version>1.36.1</google.java.format.version>
     <junit.version>5.11.0</junit.version>
     <jcstress.version>0.16</jcstress.version>
+    <jol.version>0.17</jol.version>
   </properties>
 
   <dependencyManagement>
