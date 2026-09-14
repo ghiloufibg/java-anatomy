@@ -18,9 +18,9 @@
 
   <modules>
     <!-- one module per phase; phase3..phase7 are added as they are built -->
-    <module>phase1</module>
-    <module>phase1-jcstress</module>
-    <module>phase2</module>
+    <module>concurrency-jmm</module>
+    <module>concurrency-jmm-jcstress</module>
+    <module>jvm-internals</module>
   </modules>
 
   <properties>
@@ -67,7 +67,7 @@
           <version>3.3.1</version>
         </plugin>
         <plugin>
-          <!-- packages the phase1-jcstress module into a runnable jcstress.jar uber-jar,
+          <!-- packages the concurrency-jmm-jcstress module into a runnable jcstress.jar uber-jar,
                the way the official jcstress-java-test-archetype does -->
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-shade-plugin</artifactId>

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 2: JVM internals - loading, JIT, escape analysis, GC, bytecode.
+  Nothing here needs the enable-preview flag; LayoutProbe needs jol-core, which reaches
+  into JVM internals (object headers, field offsets) and can need the add-opens flag on
+  some JDKs - wired into both the exec arguments and Surefire's argLine defensively.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.sevenrungs</groupId>
+    <artifactId>seven-rungs-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>jvm-internals</artifactId>
+
+  <name>Phase 2 - JVM internals</name>
+
+  <properties>
+    <!-- extra program argument for rungs/tools that read args[] (e.g. GcAutopsyReport's log
+         file path); override with -Dexec.programArgs=... -->
+    <exec.programArgs></exec.programArgs>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.openjdk.jol</groupId>
+      <artifactId>jol-core</artifactId>
+      <version>${jol.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <!-- computes this module's runtime classpath (target/classes + jol-core.jar) into a
+             property, so exec:exec's forked `java` can be given a real -cp without needing
+             exec:java's in-process classloading (which, like preview classes in concurrency-jmm,
+             cannot honor a JVM-launch-time flag such as the add-opens one after the fact). -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.11.0</version>
+        <executions>
+          <execution>
+            <id>build-classpath</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>build-classpath</goal>
+            </goals>
+            <configuration>
+              <outputProperty>jvminternals.runtimeClasspath</outputProperty>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <configuration>
+          <executable>java</executable>
+          <arguments>
+            <argument>--add-opens</argument>
+            <argument>java.base/java.lang=ALL-UNNAMED</argument>
+            <argument>-cp</argument>
+            <argument>${project.build.outputDirectory}${path.separator}${jvminternals.runtimeClasspath}</argument>
+            <argument>${exec.mainClass}</argument>
+            <argument>${exec.programArgs}</argument>
+          </arguments>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
