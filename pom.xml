@@ -27,6 +27,7 @@
     <module>language-evolution-bench</module>
     <module>compiler-tooling</module>
     <module>compiler-tooling-profilers</module>
+    <module>production-jvm-engineering</module>
   </modules>
 
   <properties>

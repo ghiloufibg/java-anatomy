@@ -11,9 +11,10 @@ The whole roadmap has seven phases; this repository currently implements:
 - **Phase 3 — The Foreign Function & Memory API and native interop** (`native-interop`, `native-interop-bench`)
 - **Phase 4 — Language evolution: patterns, sealed types, Valhalla, the Vector API** (`language-evolution`, `language-evolution-bench`)
 - **Phase 5 — Compiler and tooling craft: processors, agents, bytecode** (`compiler-tooling`, `compiler-tooling-profilers`)
+- **Phase 6 — Production JVM engineering: JFR, GC tuning, containers** (`production-jvm-engineering`)
 
-Phases 6 and 7 (production JVM engineering, and contributing to OpenJDK) are not built yet; each
-will land as its own module(s) the same way Phases 1 through 5 did.
+Phase 7 (contributing to OpenJDK) is not built yet; it will land as its own module(s) the same
+way Phases 1 through 6 did.
 
 ## Toolchain
 
@@ -69,3 +70,13 @@ with the ClassFile API, and forging a class with `invokedynamic` and a hidden cl
 allocation-counting profiler implemented three times — ClassFile API, ASM, Byte Buddy — including
 real ASM/Byte Buddy version corrections for JDK 25 and a genuine `VerifyError` bug found and fixed
 in the Byte Buddy implementation once tests were redesigned to fork real child JVMs.
+
+## Phase 6 — Production JVM engineering
+
+See [`production-jvm-engineering/README.md`](production-jvm-engineering/README.md) for the three graded examples (a
+custom JFR event, live GC/allocation/contention signals via JFR event streaming, and predicting a
+JVM's GC/heap ergonomics from cgroup limits) and the phase's exercise: a small HTTP service with a
+JFR-streaming "flight deck" sidecar, run under G1, generational ZGC and Shenandoah, including a
+real `EventSettings` API correction, a genuine Docker-registry policy block worked around with real
+cgroups instead (verified to reproduce the exact ergonomic behavior `docker run` would have shown),
+and a runbook mapping real symptoms to real events, fields and flags.
