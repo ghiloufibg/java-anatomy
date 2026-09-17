@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -55,12 +56,32 @@ class GcMultiCollectorSmokeTest {
   @Test
   @Timeout(60)
   void shenandoahRunsCleanlyAndProducesGcLogOutput() throws Exception {
+    // Unlike G1 and ZGC, Shenandoah was never ported to macOS/AArch64 (Apple Silicon): the flag
+    // itself is rejected at VM startup there, before any workload code runs. Skip rather than
+    // fail on a platform where this collector was never shipped.
+    assumeTrue(
+        isGcFlagSupported("-XX:+UseShenandoahGC"),
+        "Shenandoah GC is not available on this JVM/platform");
+
     // Shenandoah has no separate start/end line pairing at all: every phase is one completion
     // line, e.g. "GC(0) Pause Init Mark (unload classes) 0.087ms".
     List<String> lines = runWorkload("-XX:+UseShenandoahGC", "-Xmx64m", 3_000_000);
     assertTrue(
         lines.stream().anyMatch(l -> l.contains("Pause Init Mark")),
         "expected at least one Shenandoah init-mark pause in the captured log");
+  }
+
+  /** Probes whether this JVM accepts the given GC flag at all, without running any workload. */
+  private static boolean isGcFlagSupported(String gcFlag) throws IOException, InterruptedException {
+    String javaBin = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+    Process probe =
+        new ProcessBuilder(javaBin, gcFlag, "-version").redirectErrorStream(true).start();
+    boolean finished = probe.waitFor(10, TimeUnit.SECONDS);
+    if (!finished) {
+      probe.destroyForcibly();
+      return false;
+    }
+    return probe.exitValue() == 0;
   }
 
   /** Runs the workload as a real child JVM and returns its captured -Xlog:gc* output. */

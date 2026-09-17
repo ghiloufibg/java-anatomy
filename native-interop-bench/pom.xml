@@ -93,8 +93,13 @@
                 <!-- One line, no embedded newlines: this whole string is a shell script passed to
                      `sh -c`, and a bare newline there ends a statement (an earlier version of
                      this pom wrapped it across lines for readability and broke the build: each
-                     wrapped line ran as its own, mostly nonexistent, command). -->
-                <argument>mkdir -p "${project.build.outputDirectory}/native" &amp;&amp; gcc -shared -fPIC -I"${java.home}/include" -I"${java.home}/include/linux" -I"${project.build.directory}/native-headers" "${project.basedir}/src/main/c/jni_zlib.c" -lz -o "${project.build.outputDirectory}/native/libjniz.so"</argument>
+                     wrapped line ran as its own, mostly nonexistent, command).
+
+                     jni_md.h lives under a platform-specific subdirectory of $JAVA_HOME/include
+                     whose name is exactly `uname -s` lowercased ("linux", "darwin") on every JDK
+                     this build targets - hardcoding "linux" here broke the JNI header lookup on
+                     macOS. -->
+                <argument>mkdir -p "${project.build.outputDirectory}/native" &amp;&amp; gcc -shared -fPIC -I"${java.home}/include" -I"${java.home}/include/$(uname -s | tr '[:upper:]' '[:lower:]')" -I"${project.build.directory}/native-headers" "${project.basedir}/src/main/c/jni_zlib.c" -lz -o "${project.build.outputDirectory}/native/libjniz.so"</argument>
               </arguments>
             </configuration>
           </execution>
