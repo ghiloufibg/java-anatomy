@@ -34,7 +34,11 @@ class GcMultiCollectorSmokeTest {
     var parser = new GcLogParser();
     var pauses = parser.parsePauses(lines);
 
-    assertFalse(pauses.isEmpty(), "expected at least one real G1 pause event");
+    assertFalse(
+        pauses.isEmpty(),
+        () ->
+            "expected at least one real G1 pause event; captured log:\n"
+                + String.join("\n", lines));
     assertFalse(parser.heapOccupancyAfterGc(pauses).isEmpty());
     for (var p : pauses) {
       assertTrue(p.durationMillis() >= 0, "duration must not be negative: " + p);
