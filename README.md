@@ -78,7 +78,8 @@ in the Byte Buddy implementation once tests were redesigned to fork real child J
 
 See [`production-jvm-engineering/README.md`](production-jvm-engineering/README.md) for the three graded examples (a
 custom JFR event, live GC/allocation/contention signals via JFR event streaming, and predicting a
-JVM's GC/heap ergonomics from cgroup limits) and the phase's exercise: a small HTTP service with a
+JVM's GC/heap ergonomics from cgroup limits), a CDS / AppCDS / AOT-cache comparison measuring
+startup time and Metaspace per class-sharing mode, and the phase's exercise: a small HTTP service with a
 JFR-streaming "flight deck" sidecar, run under G1, generational ZGC and Shenandoah, including a
 real `EventSettings` API correction, a genuine Docker-registry policy block worked around with real
 cgroups instead (verified to reproduce the exact ergonomic behavior `docker run` would have shown),
