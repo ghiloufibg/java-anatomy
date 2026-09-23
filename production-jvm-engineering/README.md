@@ -192,6 +192,72 @@ as every other phase's heavier benchmark.
 | CPU-bound work is "slow" but GC and locks both look clean | `os::container` / `cpu.stat` (no JFR event; read the cgroup directly, as `ContainerCgroup.cpuStat()` does) | `nr_throttled`, `throttled_time` | Raise the CPU quota, or set `-XX:ActiveProcessorCount` to decouple GC/JIT thread counts from a fractional quota that's throttling them |
 | The service silently underuses a bigger box | (no event; read ergonomics directly, as `ErgonomicsProbe` does) | `Runtime.availableProcessors()`, `Runtime.maxMemory()` vs. the box's real specs | Check the cgroup limits (`docker run --cpus`/`--memory`, or the Kubernetes resource spec) actually match intent — a rounding-up CPU quota or an unset memory limit silently picks the wrong GC or heap size |
 
+## Startup and Metaspace: CDS, AppCDS and the AOT cache (`startup/`)
+
+A JVM spends most of its startup finding, parsing, verifying and linking classes, and it stores
+each class's metadata in Metaspace, separately in every process. Class Data Sharing does that
+work once, at build time, and maps the result into memory. `startup/` measures what each level
+buys on the same workload:
+
+- **`StartupWorkload`**: a service boot sequence in miniature (XML config, regex, `java.time`
+  formatting, SHA-256, virtual threads, `HttpClient`, logging) that loads about 2,500 classes. It
+  is both the training run and the measured run.
+- **`ClassSharingMode`**: `OFF` (`-Xshare:off`), `DEFAULT_CDS` (the JDK's own base archive, on
+  since JDK 12), `APP_CDS` (JEP 350: `-XX:ArchiveClassesAtExit`, then `-XX:SharedArchiveFile`)
+  and `AOT_CACHE` (JEP 483, created in one step with JDK 25's `-XX:AOTCacheOutput` from JEP 514,
+  and including method profiles from JEP 515).
+- **`StartupComparison`**: packages the workload into a JAR, runs each mode's training step, then
+  times several runs in separate child JVMs. A separate logged run with `-Xlog:class+load`
+  counts how many classes came from the archive (`source: shared objects file`).
+
+```
+mvn -q -pl production-jvm-engineering compile exec:java \
+    -Dexec.mainClass=dev.sevenrungs.productionjvm.startup.StartupComparison -Dexec.args=7
+```
+
+Captured on this JDK (25.0.1), 7 runs per mode:
+
+| Mode | Best wall | Median wall | Median in main | From archive | Metaspace used | Archive | Wall vs CDS off |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| CDS off | 466 ms | 488 ms | 381 ms | 0 / 2532 (0%) | 19.2 MB | - | baseline |
+| default CDS (JDK base archive) | 373 ms | 395 ms | 328 ms | 1319 / 2526 (52%) | 8.6 MB | - | -19% |
+| AppCDS (dynamic archive) | 288 ms | 309 ms | 250 ms | 2459 / 2486 (99%) | 1.4 MB | 8.3 MB | -37% |
+| AOT cache (JEP 483/514/515) | 232 ms | 255 ms | 194 ms | 2588 / 2612 (99%) | 0.8 MB | 24.1 MB | -48% |
+
+How to read it:
+
+- **The default archive only covers the JDK core.** About half of the classes come from it. XML,
+  the HTTP client, regex internals and the application's own class don't, so training on your
+  own workload is what takes coverage to 99%.
+- **Metaspace drops from 19 MB to under 1 MB.** Archived class metadata lives in the mapped
+  archive, which is file-backed and read-only, so on one host N JVMs from the same image share
+  one copy in the page cache instead of each building its own. This memory saving adds up with
+  replicas, like the header savings in `jvm-internals/footprint/`.
+- **The AOT cache is bigger than the AppCDS archive (24 MB vs 8 MB) and faster.** It stores
+  classes already loaded and linked, plus profiles that let the JIT start warm. Measured here,
+  that brings startup to about half the no-sharing time.
+
+Two things that break these archives in practice, both reproduced while building this:
+
+- **Directories on the classpath are rejected.** Training against `target/classes` fails with
+  `Cannot have non-empty directory in paths`, so `StartupComparison` packages a JAR first. The
+  archive also records the JAR's size and mtime: rebuild the JAR and the archive is stale.
+- **A stale or missing archive is ignored without an error by default.** The JVM prints an
+  `[error][aot]` line and carries on with the default CDS, so a benchmark "with the archive"
+  quietly measures something else. The archive modes here run with `-Xshare:on` /
+  `-XX:AOTMode=on`, which turn that into a startup failure. Do the same in CI and in container
+  entrypoints.
+
+`StartupComparisonTest` runs all of it as real child JVMs (about 20 forks, around 12 s). It
+asserts that:
+
+- `-Xshare:off` serves nothing from an archive;
+- the base archive covers part of the JDK but not the application;
+- AppCDS and the AOT cache serve at least 95% of classes, including the application's own;
+- both keep Metaspace under half of the no-sharing figure;
+- the AOT cache starts faster than no sharing;
+- strict mode fails when the archive is missing.
+
 ## Running the tests
 
 ```
