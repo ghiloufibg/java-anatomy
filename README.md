@@ -39,7 +39,10 @@ suite plus a hand-rolled writer-preferring read/write lock.
 ## Phase 2 — JVM internals
 
 See [`jvm-internals/README.md`](jvm-internals/README.md) for the three graded examples (class-loader identity,
-watching C2's escape analysis delete an allocation, JOL object-layout/header inspection) and the
+watching C2's escape analysis delete an allocation, JOL object-layout/header inspection), a
+footprint comparison that forks one JVM per flag set (compact object headers, compressed oops and
+class pointers, object alignment) at normal / medium / high live-set sizes and measures the heap
+each saves or costs, and the
 phase's exercise: a "GC autopsy kit" — an allocation-heavy workload run under G1, generational ZGC
 and Shenandoah, and a from-scratch parser turning raw `-Xlog:gc*` output into pause histograms,
 concurrent-cycle timelines and heap-occupancy curves.

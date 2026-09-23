@@ -59,6 +59,74 @@ java --add-opens java.base/java.lang=ALL-UNNAMED -XX:+UseCompactObjectHeaders \
     -cp "jvm-internals/target/classes:$JOL_JAR" dev.sevenrungs.jvminternals.LayoutProbe
 ```
 
+## Measuring what header and pointer flags save: `footprint/`
+
+`LayoutProbe` shows one object's header; `footprint/` answers the question you actually get asked
+in production: *how much heap would we save at our load by changing JVM flags, without touching
+application code?*
+
+- **`OrderGraph`** — an ordinary business object graph: 14 heap objects per order (boxed `Long`,
+  `String` + `byte[]`, `Instant`, `ArrayList`, `HashMap` + nodes, three line items) carrying ~60
+  bytes of real data. Many small objects is exactly the shape where headers and references
+  dominate.
+- **`LoadProfile`** — `NORMAL` / `MEDIUM` / `HIGH`: 50k / 250k / 1M orders held live.
+- **`JvmMemoryConfig`** — the flag sets being compared: defaults, `-XX:+UseCompactObjectHeaders`
+  (JEP 519), `-XX:-UseCompressedClassPointers`, `-XX:-UseCompressedOops` (what you silently get
+  above `-Xmx32g`), `-XX:ObjectAlignmentInBytes=16`.
+- **`FootprintProbe`** — the child JVM: builds the orders, then reports two independent numbers —
+  JOL's exact per-order size and used-heap-after-GC delta — so each checks the other.
+- **`FootprintComparison`** — forks one probe JVM per config per load (layout flags are fixed at
+  JVM launch, so separate JVMs are the only honest comparison) and prints the table below.
+
+```
+mvn -q -pl jvm-internals compile exec:exec \
+    -Dexec.mainClass=dev.sevenrungs.jvminternals.footprint.FootprintComparison
+# optional: -Dexec.programArgs=0.2 scales every load down for a quicker run
+```
+
+Captured on this JDK (25.0.1), `-Xmx2g -XX:+UseSerialGC` in every child:
+
+| Load | Orders | JVM configuration | Header | Ref | Align | Bytes/order (JOL) | Live heap | vs default |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| NORMAL | 50,000 | default | 12 B | 4 B | 8 B | 443.7 | 21.4 MB | baseline |
+| NORMAL | 50,000 | compact object headers | 8 B | 4 B | 8 B | 371.7 | 17.7 MB | -17.4% (-3.7 MB) |
+| NORMAL | 50,000 | no compressed class pointers | 16 B | 4 B | 8 B | 484.9 | 23.2 MB | +8.3% (+1.8 MB) |
+| NORMAL | 50,000 | no compressed oops (heap > 32 GB) | 12 B | 8 B | 8 B | 540.3 | 26.2 MB | +22.1% (+4.7 MB) |
+| NORMAL | 50,000 | 16-byte object alignment | 12 B | 4 B | 16 B | 484.9 | 23.2 MB | +8.4% (+1.8 MB) |
+| MEDIUM | 250,000 | default | 12 B | 4 B | 8 B | 443.7 | 107.9 MB | baseline |
+| MEDIUM | 250,000 | compact object headers | 8 B | 4 B | 8 B | 371.7 | 88.7 MB | -17.8% (-19.2 MB) |
+| MEDIUM | 250,000 | no compressed class pointers | 16 B | 4 B | 8 B | 484.9 | 115.9 MB | +7.4% (+8.0 MB) |
+| MEDIUM | 250,000 | no compressed oops (heap > 32 GB) | 12 B | 8 B | 8 B | 540.3 | 132.1 MB | +22.4% (+24.1 MB) |
+| MEDIUM | 250,000 | 16-byte object alignment | 12 B | 4 B | 16 B | 484.9 | 115.9 MB | +7.4% (+8.0 MB) |
+| HIGH | 1,000,000 | default | 12 B | 4 B | 8 B | 443.7 | 435.5 MB | baseline |
+| HIGH | 1,000,000 | compact object headers | 8 B | 4 B | 8 B | 371.7 | 358.3 MB | -17.7% (-77.2 MB) |
+| HIGH | 1,000,000 | no compressed class pointers | 16 B | 4 B | 8 B | 484.9 | 466.7 MB | +7.2% (+31.2 MB) |
+| HIGH | 1,000,000 | no compressed oops (heap > 32 GB) | 12 B | 8 B | 8 B | 540.3 | 532.2 MB | +22.2% (+96.6 MB) |
+| HIGH | 1,000,000 | 16-byte object alignment | 12 B | 4 B | 16 B | 484.9 | 466.7 MB | +7.2% (+31.2 MB) |
+
+How to read it:
+
+- **The percentage is a property of the object graph, not of the load.** Bytes/order is identical
+  at every load, so compact headers save ~17–18% whether you hold 50k orders or 1M; only the
+  absolute megabytes scale (3.7 → 19 → 77 MB). Your own saving depends on your average object
+  size: the smaller your objects, the bigger the win. Big `byte[]`/`long[]` payloads barely notice.
+- **Header savings are quantized by alignment.** Compact headers remove 4 bytes per object, but
+  sizes round to 8, so each object saves either 8 bytes or nothing. JOL's per-class footprint
+  shows 9 of the 14 objects per order drop a full slot (`Order` 48→40, `LineItem` 32→24 ×3,
+  `Long` 24→16, `HashMap` 48→40, `HashMap$Node` 32→24 ×2, `Object[]` 32→24) and 5 save nothing
+  (`String`, `byte[]`, `Instant`, `ArrayList`, `Node[]` stay put): 72 B/order, more than the naive
+  14 × 4 = 56 B. Run `GraphLayout.parseInstance(...).toFootprint()` under both flags to see this
+  for your own classes.
+- **Crossing 32 GB costs ~22% on this graph** — every reference doubles. A 31 GB heap with
+  compressed oops can hold more live data than a 36 GB one without; `ObjectAlignmentInBytes=16`
+  keeps 4-byte references to 64 GB at a smaller (~7%) padding cost.
+
+`FootprintComparisonTest` forks all 15 JVMs at a tenth of this scale (~25 s in `mvn verify`) and
+asserts the shape of each config (12/8/16-byte headers, 4/8-byte references), that compact headers
+save at least 10% at every load, that every other flag set costs memory, that the heap and JOL
+measurements agree within 5%, and that per-order cost is load-independent so savings scale
+linearly. `OrderGraphTest` pins the 14-objects-per-order claim with JOL.
+
 ## The exercise: a GC autopsy kit
 
 > Write one allocation-heavy workload with a mix of short-lived objects, a large live set, and
