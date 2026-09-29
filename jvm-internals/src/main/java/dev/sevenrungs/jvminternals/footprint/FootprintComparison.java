@@ -1,14 +1,7 @@
 package dev.sevenrungs.jvminternals.footprint;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.EnumMap;
-import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Forks one {@link FootprintProbe} JVM per {@link JvmMemoryConfig} per {@link LoadProfile} and
@@ -29,8 +22,6 @@ import java.util.concurrent.TimeUnit;
  * </pre>
  */
 public final class FootprintComparison {
-  static final String HEAP = "-Xmx2g";
-
   private FootprintComparison() {}
 
   public static void main(String[] args) {
@@ -74,39 +65,7 @@ public final class FootprintComparison {
 
   /** Forks a child JVM with {@code config}'s flags and parses its footprint report. */
   public static FootprintResult measure(JvmMemoryConfig config, int orders) {
-    List<String> command = new ArrayList<>();
-    command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
-    command.add(HEAP);
-    command.add("-XX:+UseSerialGC");
-    // lets JOL self-attach for Instrumentation.getObjectSize - exact sizes under every header mode
-    command.add("-Djdk.attach.allowAttachSelf=true");
-    command.add("--add-opens");
-    command.add("java.base/java.lang=ALL-UNNAMED");
-    command.addAll(config.flags());
-    command.add("-cp");
-    command.add(System.getProperty("java.class.path"));
-    command.add(FootprintProbe.class.getName());
-    command.add(String.valueOf(orders));
-    try {
-      Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-      String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-      if (!process.waitFor(120, TimeUnit.SECONDS) || process.exitValue() != 0) {
-        process.destroyForcibly();
-        throw new IllegalStateException("probe failed under " + config + ":\n" + output);
-      }
-      return output
-          .lines()
-          .filter(l -> l.startsWith(FootprintResult.PREFIX))
-          .findFirst()
-          .map(l -> FootprintResult.parse(config, l))
-          .orElseThrow(
-              () ->
-                  new IllegalStateException("no FOOTPRINT line under " + config + ":\n" + output));
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new IllegalStateException(e);
-    }
+    String output = ChildJvm.run(config, "", FootprintProbe.class, String.valueOf(orders));
+    return FootprintResult.parse(config, ChildJvm.lineStartingWith(output, FootprintResult.PREFIX));
   }
 }

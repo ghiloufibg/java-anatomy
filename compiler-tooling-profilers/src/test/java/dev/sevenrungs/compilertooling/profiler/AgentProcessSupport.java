@@ -20,15 +20,8 @@ package dev.sevenrungs.compilertooling.profiler;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
-import java.util.jar.Attributes;
-import java.util.jar.JarEntry;
-import java.util.jar.JarOutputStream;
-import java.util.jar.Manifest;
-import java.util.stream.Stream;
 
 final class AgentProcessSupport {
   private AgentProcessSupport() {}
@@ -71,31 +64,8 @@ final class AgentProcessSupport {
     return output;
   }
 
-  /** Packages this module's already-compiled profiler classes into a real Premain-Class jar. */
-  static Path buildAgentJar() throws IOException {
-    Path classesDir = Path.of("target", "classes");
-    Path packageDir =
-        classesDir.resolve(Path.of("dev", "sevenrungs", "compilertooling", "profiler"));
-    Path agentJar = Files.createTempFile("allocation-agent-", ".jar");
-
-    Manifest manifest = new Manifest();
-    manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
-    manifest
-        .getMainAttributes()
-        .putValue("Premain-Class", "dev.sevenrungs.compilertooling.profiler.AllocationAgent");
-    manifest.getMainAttributes().putValue("Can-Retransform-Classes", "true");
-
-    try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(agentJar), manifest);
-        Stream<Path> classFiles = Files.walk(packageDir)) {
-      for (Path classFile : classFiles.filter(p -> p.toString().endsWith(".class")).toList()) {
-        String entryName = classesDir.relativize(classFile).toString().replace('\\', '/');
-        jos.putNextEntry(new JarEntry(entryName));
-        try (InputStream in = Files.newInputStream(classFile)) {
-          in.transferTo(jos);
-        }
-        jos.closeEntry();
-      }
-    }
-    return agentJar;
+  /** A real Premain-Class jar for this module's already-compiled profiler classes. */
+  static Path buildAgentJar() {
+    return AgentJar.build();
   }
 }
