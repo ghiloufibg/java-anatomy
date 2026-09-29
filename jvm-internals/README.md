@@ -127,6 +127,74 @@ save at least 10% at every load, that every other flag set costs memory, that th
 measurements agree within 5%, and that per-order cost is load-independent so savings scale
 linearly. `OrderGraphTest` pins the 14-objects-per-order claim with JOL.
 
+### Predicting it for *your* application: `footprint/estimate/`
+
+`FootprintComparison` measures a synthetic workload by restarting it under every flag set. You
+can't always restart a production service five times. `FootprintEstimator` predicts the same
+table from **one live class histogram** of the running application:
+
+```
+jcmd <pid> GC.class_histogram > app.histo          # forces a full GC, counts live objects
+java -cp jvm-internals/target/classes:$JOL_JAR \
+    dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimator \
+    app.histo DEFAULT path/to/app.jar              # source config, then the app's classpath
+```
+
+How it works:
+
+- **`LiveHistogram`**: parses the histogram (instances and bytes per class). It includes
+  JDK-internal objects such as `HashMap$Node` or the `byte[]` behind each `String`, which a
+  bytecode agent limited to application classes can't see. It can also capture the current
+  JVM's own histogram through the `DiagnosticCommand` MBean.
+- **`SizeOracle`**: forks one JVM per target configuration, on the application's classpath, and
+  asks JOL for each class's real size there. Arithmetic ("header − 4 bytes, rounded to 8") gets
+  it wrong because fields are re-packed. For example, `Long` is 24 → 16 bytes with compact
+  headers, where the arithmetic predicts 24 → 24.
+- **`FootprintEstimator`**: applies the layouts to the histogram, with the precision each kind
+  of class allows:
+  - **objects:** exact;
+  - **arrays:** estimated from their average length, with a stated ± (the histogram doesn't
+    give individual lengths, so padding is assumed uniform);
+  - **hidden classes and lambdas:** left unchanged and reported, never silently dropped.
+
+With no arguments, it runs on a probe holding `MEDIUM`'s 250k orders, so it can be compared with
+the measured table above:
+
+| Target configuration | Heap now | Predicted | Change | Objects (exact) | Arrays (est.) | +/- | Measured by `FootprintComparison` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| compact object headers | 106.7 MB | 88.6 MB | -17.0% | -15.3 MB | -2.9 MB | 3.6 MB | -17.8% |
+| no compressed class pointers | 106.7 MB | 115.3 MB | +8.0% | +5.7 MB | +2.9 MB | 3.6 MB | +7.4% |
+| no compressed oops (heap > 32 GB) | 106.7 MB | 129.6 MB | +21.4% | +17.2 MB | +5.7 MB | 3.6 MB | +22.4% |
+| 16-byte object alignment | 106.7 MB | 117.2 MB | +9.8% | +7.6 MB | +2.9 MB | 6.4 MB | +7.4% |
+
+It also prints the classes that change the most. For compact headers: `LineItem` −5.7 MB,
+`HashMap$Node` −3.8 MB, then `HashMap`, `Order` and `Long` at −1.9 MB each. That shows *where*
+the saving comes from in your own code.
+
+Two things found while validating it:
+
+- **16-byte alignment is the least precise prediction** (+9.8% predicted vs +7.4% measured, still
+  inside its ±6.4 MB). That's where array padding weighs the most, and this workload's arrays all
+  have the same short lengths rather than uniformly spread ones. The band doubles for that
+  config because padding can reach 15 bytes instead of 7.
+- **Compare what the application adds, not the whole heap.** `-XX:-UseCompressedClassPointers` and
+  `-XX:ObjectAlignmentInBytes=16` don't match the JDK's default CDS archive, so those JVMs boot
+  without it and start from a different set of the JDK's own objects. On a small live set, the
+  whole-heap comparison was off by 17% for that reason alone. The tests therefore subtract an
+  idle JVM's histogram (`LiveHistogram.minus`) on both sides, and the error drops to 0–2.3%.
+
+Tests:
+
+- `FootprintEstimatorTest` (about 15 child JVMs, ~10 s) predicts every configuration from one
+  default-flags histogram, then runs the same live set under each flag set. It asserts that:
+  - the real footprint falls inside the predicted band and within 3%;
+  - the predicted direction matches the measured one;
+  - the `Order` and `LineItem` bytes are predicted *exactly*;
+  - compact headers save the most on the classes JOL showed shrinking.
+- `SizeOracleTest` pins the oracle's layouts (`Long` 24 → 16, `byte[]` base 16 → 12, `long[]`
+  unchanged, 8-byte references without compressed oops, hidden classes reported as unresolved).
+- `FootprintEstimateMathTest` covers parsing and arithmetic without forking a JVM.
+
 ## The exercise: a GC autopsy kit
 
 > Write one allocation-heavy workload with a mix of short-lived objects, a large live set, and
