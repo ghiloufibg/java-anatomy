@@ -153,18 +153,33 @@ be needed before treating any ordering among the three as real.
 
 Phase 2's `FootprintEstimator` (`jvm-internals/.../footprint/estimate/`) predicts, class by
 class, how a live heap changes under each JVM flag set (compact object headers, no compressed
-oops, and so on). `attribution/` joins that prediction with this agent's allocation sites, so
-the answer names code, not just classes:
+oops, and so on). `attribution/` credits that prediction to code in two passes, so the answer
+names methods, not just classes:
+
+1. **Agent, exact.** `AllocationAgent` counts every `new` in the instrumented classes. Each class's
+   change goes to those sites, in proportion to their allocation counts.
+2. **JFR, sampled.** What the agent can't see (objects the JDK creates on your code's behalf) goes
+   to the application method found by walking up the allocation stack that JFR recorded.
+
+What remains after both passes is reported as **unattributed**. Sites, callers and unattributed
+always add up to the estimate exactly, rounding included.
+
+The classes:
 
 - **`AllocationSites`**: parses the report `AllocationAgent` prints at exit
   (`owner.method:type = count`). It maps the agent's bytecode-level type labels (`byte[]`,
   `java/lang/Object[]`, `[I[]`, `[[I`) to histogram names (`[B`, `[Ljava.lang.Object;`, `[[I`).
-- **`AllocationAttribution`**: for each class whose footprint changes, it gives the application
-  sites their share, split by allocation count. The share is `min(1, seen allocations / live
-  instances)`, and the rest is reported as **allocated where the agent doesn't look**. The parts
-  always add up to the estimate exactly, rounding included.
+- **`JfrAllocationCallers`**: reads `jdk.OldObjectSample` events. Each one is a sampled object
+  still alive when the recording ends, with its size and allocation stack. Summing sizes per class
+  and per first application frame gives the split.
+- **`AllocationAttribution`**:
+  - `attribute` handles the agent pass. The sites' share of a class is `min(1, seen allocations /
+    live instances)`, split by allocation count.
+  - `withCallers` handles the JFR pass, splitting the unattributed rest by sampled live bytes.
+    Samples with no application frame keep their share unattributed.
 - **`SavingsAttributionReport`**: the CLI. With no arguments, it runs Phase 2's `HistogramProbe`
-  under the real agent (asm, instrumenting `OrderGraph` only) and prints the tables below.
+  under the real agent (asm, instrumenting `OrderGraph` only) and a JFR recording, and prints the
+  tables below.
 - **`AgentJar`**: builds the `-javaagent` jar from the compiled classes. It moved out of the
   tests' `AgentProcessSupport`, which now delegates to it, so the CLI can use it too.
 
@@ -177,55 +192,93 @@ mvn -q -pl compiler-tooling-profilers compile exec:exec \
 (`-am` can't be combined with `exec:exec` here: it would try to run the main class in the parent
 POM and in `jvm-internals` too.)
 
-Against a real application: run it under the agent (`-javaagent:profilers.jar=asm:com.acme.`,
-report on stdout at exit) and capture `jcmd <pid> GC.class_histogram` while it runs. Then pass
-both files: `SavingsAttributionReport app.histo agent.txt DEFAULT path/to/app.jar`.
+Against a real application, run it once under the agent and a JFR old-object recording, and
+capture a histogram while it holds its steady-state live set:
+
+```
+java -javaagent:profilers.jar=asm:com.acme. \
+     -XX:FlightRecorderOptions:old-object-queue-size=100000 \
+     -XX:StartFlightRecording:filename=app.jfr,jdk.OldObjectSample#enabled=true,jdk.OldObjectSample#stackTrace=true,jdk.OldObjectSample#cutoff=0s \
+     -jar app.jar > agent.txt                          # agent report on stdout at exit
+jcmd <pid> GC.class_histogram > app.histo              # while it runs
+SavingsAttributionReport app.histo agent.txt DEFAULT app.jar app.jfr com.acme.
+```
 
 Captured on JDK 25.0.1, 250k orders:
 
-| Target configuration | Total change | In your code | Allocated elsewhere |
-|---|---:|---:|---:|
-| compact object headers | -18.1 MB | -9.5 MB (53%) | -8.6 MB |
-| no compressed class pointers | +8.6 MB | +1.9 MB (22%) | +6.7 MB |
-| no compressed oops (heap > 32 GB) | +22.9 MB | +11.4 MB (50%) | +11.4 MB |
-| 16-byte object alignment | +10.5 MB | +1.9 MB (18%) | +8.6 MB |
+| Target configuration | Total change | Agent sites (exact) | Via JFR stacks (sampled) | Unattributed |
+|---|---:|---:|---:|---:|
+| compact object headers | -18.1 MB | -9.5 MB (53%) | -8.6 MB (47%) | -0.0 MB (0%) |
+| no compressed class pointers | +8.6 MB | +1.9 MB (22%) | +6.7 MB (78%) | +0.0 MB (0%) |
+| no compressed oops (heap > 32 GB) | +22.9 MB | +11.4 MB (50%) | +11.4 MB (50%) | +0.0 MB (0%) |
+| 16-byte object alignment | +10.5 MB | +1.9 MB (18%) | +8.6 MB (82%) | +0.0 MB (0%) |
 
-Compact headers, by site: `OrderGraph.order` allocating `LineItem` (750,000, −5.7 MB), `HashMap`
-(250,000, −1.9 MB) and `Order` (250,000, −1.9 MB). Allocated where the agent doesn't look:
+Compact headers, by agent site: `OrderGraph.order` allocating `LineItem` (750,000, −5.7 MB),
+`HashMap` (250,000, −1.9 MB) and `Order` (250,000, −1.9 MB). Credited through JFR stacks, again
+to `OrderGraph.order`:
 
-- `HashMap$Node` (−3.8 MB), made inside `HashMap.put`;
+- `HashMap$Node` (−3.8 MB), made inside the `HashMap.put` it calls;
 - `Long` (−1.9 MB), boxed inside `Long.valueOf`;
-- the `byte[]`, `Object[]` and `HashMap$Node[]` behind `String`, `ArrayList` and `HashMap`
+- the `byte[]`, `Object[]` and `HashMap$Node[]` behind its `String`, `ArrayList` and `HashMap`
   (−1.0 MB each).
 
-**The finding: about half the saving is in objects the JDK allocates on your code's behalf.**
+What's left unattributed is a few dozen JDK cache objects (`MethodType`, `SoftReference`…) that
+aren't the orders' at all.
+
+**Finding 1: about half the saving is in objects the JDK allocates on your code's behalf.**
 `AllocationAgent` only sees `new` instructions in the classes it instruments, and it skips
 `<init>`/`<clinit>`. So a `HashMap$Node` your `map.put` causes, or the `Object[]` inside the
-`ArrayList` you created, appears with 0 allocations seen. The attribution reports that instead of
-hiding it. Crediting those to the calling line would need stack traces, for instance from JFR's
-`jdk.ObjectAllocationSample`, which this agent doesn't collect.
+`ArrayList` you created, has 0 allocations seen by the agent. With the agent alone, 47% of the
+compact-header saving (and up to 82% of the 16-byte-alignment cost) could not be attributed.
 
-The one assumption: the agent counts **allocations** and the histogram counts **survivors**, so
-the attribution assumes a class's objects survive in the same proportion whichever site made
-them. A site whose objects all die young can be credited with savings that belong to a
-longer-lived site of the same class.
+**Finding 2: old-object samples, not allocation samples.** The first version used
+`jdk.ObjectAllocationSample`, which measures **allocations**. Under "no compressed class
+pointers", 20% was then left unattributed, including 85% of the live `byte[]` change. The probe's
+own garbage (rendering its histogram as text, after the orders were built) outweighed the orders'
+`byte[]`s in allocated bytes, sampled with no application frame. `jdk.OldObjectSample` only
+reports sampled objects **still alive**, which is what a footprint is about. Two conditions for it
+to be right:
+
+- **Collect just before the recording ends.** JFR still reports objects that died after the last
+  GC. `HistogramProbe` now runs `System.gc()` before exiting, while the orders are still
+  referenced.
+- **Subtract an idle recording, as for the histogram.** JFR samples the whole heap, including the
+  JDK's startup objects (thousands of `byte[]`s with no application frame).
+  `JfrAllocationCallers.minus` removes them class by class and caller by caller.
+
+**Sampling density.** JFR samples when a thread refills its TLAB. With the default adaptive TLABs,
+a short run produced 40 samples; the demo fixes `-XX:TLABSize=4k -XX:-ResizeTLAB` (about 5,000
+samples), which doesn't change object layout. On a real application, a longer run gives more
+samples. A rarely allocated class may get none and stay unattributed.
+
+The remaining assumptions:
+
+- **Agent pass:** the agent counts allocations and the histogram counts survivors, so a class's
+  objects are assumed to survive in the same proportion whichever site made them.
+- **JFR pass:** it is a sample, so shares are estimates. The demo's unattributed rest varied from
+  0% to 3.7% over 8 runs, always in high-churn classes (`byte[]`, `String`, `Object[]`).
 
 Tests:
 
 - `SavingsAttributionReportTest` (about 7 child JVMs, ~12 s) runs the full chain under the real
-  agent. It checks that:
+  agent and JFR. It checks that:
   - the agent counted exactly `N` `Order`s, `3N` `LineItem`s and `N` `HashMap`s;
-  - for every configuration, attributed + unattributed equals the estimated change;
+  - for every configuration, sites + callers + unattributed equals the estimated change;
   - `order()` is credited exactly −8 B × 3N for `LineItem` under compact headers;
-  - `HashMap$Node` and `Long` show up as unattributed with 0 allocations seen, not lost;
-  - the attributed share of the compact-header saving is about half.
-- `AllocationAttributionTest` covers the arithmetic without a JVM: fully seen, never seen and
-  partly seen classes, more allocations than survivors, rounding, unchanged classes.
+  - with the agent alone, `HashMap$Node` and `Long` are unattributed with 0 allocations seen;
+  - through JFR, at least 95% of their saving goes to `order()`;
+  - less than 10% is left unattributed for every configuration (measured noise: 0–3.7%);
+  - the agent-exact share of the compact-header saving is about half.
+- `AllocationAttributionTest` covers the arithmetic without a JVM, for both passes:
+  - agent pass: fully seen, never seen and partly seen classes, more allocations than survivors;
+  - JFR pass: split by weight, "no application frame" share kept, never-sampled classes, idle
+    subtraction;
+  - rounding and unchanged classes.
 - `AllocationSitesTest` covers report parsing and every type-label mapping.
 
-This module now depends on `jvm-internals`: build it from the root, or with `-am` when using
-`-pl` for `verify`. The dependency and JOL are excluded from the shaded `profilers.jar`, so the agent jar is
-unchanged.
+This module now depends on `jvm-internals`: build it from the root, or with `-am` when using `-pl`
+for `verify`. The dependency and JOL are excluded from the shaded `profilers.jar`, so the agent jar
+is unchanged.
 
 ## Testing strategy
 

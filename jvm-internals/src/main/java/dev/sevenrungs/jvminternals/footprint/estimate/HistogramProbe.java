@@ -28,6 +28,9 @@ public final class HistogramProbe {
     System.out.println(BEGIN);
     System.out.println(histogram);
     System.out.println(END);
+    // collect the histogram's own garbage while the orders are still referenced, so a JFR
+    // old-object recording dumped at exit (jdk.OldObjectSample) is left with survivors only
+    System.gc();
     sink = null;
   }
 

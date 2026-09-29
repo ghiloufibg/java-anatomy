@@ -74,7 +74,8 @@ allocation-counting profiler implemented three times — ClassFile API, ASM, Byt
 real ASM/Byte Buddy version corrections for JDK 25 and a genuine `VerifyError` bug found and fixed
 in the Byte Buddy implementation once tests were redesigned to fork real child JVMs, plus the
 agent put to work: crediting each JVM flag's predicted heap saving to the code that allocates the
-objects (and reporting the half the JDK allocates on that code's behalf).
+objects, including the half the JDK allocates on that code's behalf, traced back through JFR
+old-object samples.
 
 ## Phase 6 — Production JVM engineering
 

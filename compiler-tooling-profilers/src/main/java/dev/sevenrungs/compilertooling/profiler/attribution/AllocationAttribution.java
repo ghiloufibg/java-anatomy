@@ -30,17 +30,29 @@ import java.util.Map;
  * young gets credited with savings that belong to a longer-lived site of the same class.
  */
 public record AllocationAttribution(
-    JvmMemoryConfig target, List<SiteSaving> sites, List<Unattributed> unattributed) {
+    JvmMemoryConfig target,
+    List<SiteSaving> sites,
+    List<CallerSaving> callers,
+    List<Unattributed> unattributed) {
 
   /** The part of {@code className}'s footprint change credited to one allocation site. */
   public record SiteSaving(String location, String className, long allocations, long delta) {}
 
-  /** The part of {@code className}'s change no application allocation site accounts for. */
+  /**
+   * The part of {@code className}'s change credited, through sampled JFR stack traces, to the
+   * application method that caused an allocation the agent couldn't see.
+   *
+   * @param sampledBytes the JFR sample weight behind this share
+   */
+  public record CallerSaving(String location, String className, long sampledBytes, long delta) {}
+
+  /** The part of {@code className}'s change no application code accounts for. */
   public record Unattributed(
       String className, long liveInstances, long seenAllocations, long delta) {}
 
   public AllocationAttribution {
     sites = List.copyOf(sites);
+    callers = List.copyOf(callers);
     unattributed = List.copyOf(unattributed);
   }
 
@@ -80,22 +92,79 @@ public record AllocationAttribution(
     Comparator<Long> biggestChange = Comparator.comparingLong(Math::abs);
     sites.sort(Comparator.comparing(SiteSaving::delta, biggestChange).reversed());
     unattributed.sort(Comparator.comparing(Unattributed::delta, biggestChange).reversed());
-    return new AllocationAttribution(estimate.target(), sites, unattributed);
+    return new AllocationAttribution(estimate.target(), sites, List.of(), unattributed);
+  }
+
+  /**
+   * Credits the unattributed part of each class to the application methods whose stacks JFR sampled
+   * allocating it, split by sampled weight. Weight sampled with no application frame on the stack
+   * (JDK startup, for instance) keeps its share unattributed.
+   */
+  public AllocationAttribution withCallers(JfrAllocationCallers jfr) {
+    List<CallerSaving> credited = new ArrayList<>(callers);
+    List<Unattributed> remaining = new ArrayList<>();
+    for (Unattributed u : unattributed) {
+      Map<String, Long> weights = jfr.callersOf(u.className());
+      long total = weights.values().stream().mapToLong(Long::longValue).sum();
+      if (total == 0) {
+        remaining.add(u);
+        continue;
+      }
+      List<CallerSaving> shares = new ArrayList<>();
+      for (var w : weights.entrySet()) {
+        long share = Math.round(u.delta() * (double) w.getValue() / total);
+        if (!w.getKey().equals(JfrAllocationCallers.NO_APPLICATION_FRAME)) {
+          shares.add(new CallerSaving(w.getKey(), u.className(), w.getValue(), share));
+        }
+      }
+      long kept = u.delta() - shares.stream().mapToLong(CallerSaving::delta).sum();
+      if (weights.containsKey(JfrAllocationCallers.NO_APPLICATION_FRAME) || shares.isEmpty()) {
+        if (kept != 0) {
+          remaining.add(
+              new Unattributed(u.className(), u.liveInstances(), u.seenAllocations(), kept));
+        }
+      } else if (kept != 0) {
+        // every sample had an application caller: the rounding remainder goes to the biggest one
+        shares.sort(Comparator.comparingLong(CallerSaving::sampledBytes).reversed());
+        CallerSaving top = shares.getFirst();
+        shares.set(
+            0,
+            new CallerSaving(
+                top.location(), top.className(), top.sampledBytes(), top.delta() + kept));
+      }
+      credited.addAll(shares);
+    }
+    Comparator<Long> biggestChange = Comparator.comparingLong(Math::abs);
+    credited.sort(Comparator.comparing(CallerSaving::delta, biggestChange).reversed());
+    remaining.sort(Comparator.comparing(Unattributed::delta, biggestChange).reversed());
+    return new AllocationAttribution(target, sites, credited, remaining);
   }
 
   public long attributedDelta() {
     return sites.stream().mapToLong(SiteSaving::delta).sum();
   }
 
+  /** The change credited through sampled JFR stacks: an estimate, unlike {@link #sites}. */
+  public long callerDelta() {
+    return callers.stream().mapToLong(CallerSaving::delta).sum();
+  }
+
   public long unattributedDelta() {
     return unattributed.stream().mapToLong(Unattributed::delta).sum();
   }
 
-  /** The change credited to one code location, summed over every class it allocates. */
+  /**
+   * The change credited to one code location, summed over every class it allocates - exactly (agent
+   * sites) plus, if {@link #withCallers} was applied, what JFR sampled it causing.
+   */
   public long deltaAt(String location) {
     return sites.stream()
-        .filter(s -> s.location().equals(location))
-        .mapToLong(SiteSaving::delta)
-        .sum();
+            .filter(s -> s.location().equals(location))
+            .mapToLong(SiteSaving::delta)
+            .sum()
+        + callers.stream()
+            .filter(c -> c.location().equals(location))
+            .mapToLong(CallerSaving::delta)
+            .sum();
   }
 }

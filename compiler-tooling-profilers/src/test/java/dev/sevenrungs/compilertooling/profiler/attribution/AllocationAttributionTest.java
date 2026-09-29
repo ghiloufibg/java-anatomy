@@ -3,6 +3,7 @@ package dev.sevenrungs.compilertooling.profiler.attribution;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.sevenrungs.compilertooling.profiler.attribution.AllocationAttribution.CallerSaving;
 import dev.sevenrungs.compilertooling.profiler.attribution.AllocationAttribution.SiteSaving;
 import dev.sevenrungs.compilertooling.profiler.attribution.AllocationAttribution.Unattributed;
 import dev.sevenrungs.compilertooling.profiler.attribution.AllocationSites.Site;
@@ -11,6 +12,7 @@ import dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimate;
 import dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimate.ClassEstimate;
 import dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimate.Kind;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /** The attribution arithmetic on hand-built estimates - no agent, no child JVM. */
@@ -80,6 +82,73 @@ class AllocationAttributionTest {
             site("app.A", "f", "java.util.ArrayList", 1000));
     assertTrue(a.sites().isEmpty());
     assertTrue(a.unattributed().isEmpty());
+  }
+
+  @Test
+  void jfrCallersTakeOverWhatTheAgentCouldNotSee() {
+    // HashMap$Node: never `new`ed in application bytecode, but JFR saw put() called from load()
+    var a =
+        attribute(List.of(object("java.util.HashMap$Node", 2000, -16_000)))
+            .withCallers(jfr("java.util.HashMap$Node", Map.of("app.Orders.load", 640L)));
+    assertEquals(
+        List.of(new CallerSaving("app.Orders.load", "java.util.HashMap$Node", 640, -16_000)),
+        a.callers());
+    assertTrue(a.unattributed().isEmpty());
+    assertEquals(-16_000, a.deltaAt("app.Orders.load"));
+  }
+
+  @Test
+  void jfrWeightSplitsAClassBetweenCallersAndKeepsTheNoApplicationShareUnattributed() {
+    var a =
+        attribute(List.of(object("[B", 1000, -8000)))
+            .withCallers(
+                jfr(
+                    "[B",
+                    Map.of(
+                        "app.A.f",
+                        300L,
+                        "app.B.g",
+                        100L,
+                        JfrAllocationCallers.NO_APPLICATION_FRAME,
+                        400L)));
+    assertEquals(-3000, a.deltaAt("app.A.f"));
+    assertEquals(-1000, a.deltaAt("app.B.g"));
+    assertEquals(-4000, a.unattributedDelta());
+    assertEquals(-8000, a.callerDelta() + a.unattributedDelta(), "nothing lost or invented");
+  }
+
+  @Test
+  void classesJfrNeverSampledStayUnattributed() {
+    var a =
+        attribute(List.of(object("java.lang.Long", 100, -800)))
+            .withCallers(jfr("[B", Map.of("app.A.f", 10L)));
+    assertTrue(a.callers().isEmpty());
+    assertEquals(-800, a.unattributedDelta());
+  }
+
+  @Test
+  void jfrRoundingRemainderGoesToTheBiggestCallerWhenEverySampleHadOne() {
+    var a =
+        attribute(List.of(object("app.X", 3, -1000)))
+            .withCallers(jfr("app.X", Map.of("app.P.a", 1L, "app.P.b", 1L, "app.P.c", 1L)));
+    assertEquals(-1000, a.callerDelta());
+    assertTrue(a.unattributed().isEmpty());
+  }
+
+  @Test
+  void subtractingAnIdleRecordingRemovesTheJdksOwnStartupObjects() {
+    var loaded =
+        new JfrAllocationCallers(
+            Map.of(
+                "[B", Map.of("app.A.f", 900L, JfrAllocationCallers.NO_APPLICATION_FRAME, 1100L)));
+    var idle =
+        new JfrAllocationCallers(
+            Map.of("[B", Map.of(JfrAllocationCallers.NO_APPLICATION_FRAME, 1150L)));
+    assertEquals(Map.of("app.A.f", 900L), loaded.minus(idle).callersOf("[B"));
+  }
+
+  private static JfrAllocationCallers jfr(String className, Map<String, Long> weights) {
+    return new JfrAllocationCallers(Map.of(className, weights));
   }
 
   private static ClassEstimate object(String className, long instances, long delta) {
