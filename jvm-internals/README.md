@@ -195,6 +195,10 @@ Tests:
   unchanged, 8-byte references without compressed oops, hidden classes reported as unresolved).
 - `FootprintEstimateMathTest` covers parsing and arithmetic without forking a JVM.
 
+To credit each class's change to the code that allocates it, see `attribution/` in
+[`compiler-tooling-profilers`](../compiler-tooling-profilers/README.md), which joins this
+estimate with Phase 5's `AllocationAgent`.
+
 ## The exercise: a GC autopsy kit
 
 > Write one allocation-heavy workload with a mix of short-lived objects, a large live set, and

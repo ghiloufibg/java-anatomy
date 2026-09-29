@@ -88,6 +88,16 @@ public record LiveHistogram(List<Entry> entries) {
     return new LiveHistogram(grown);
   }
 
+  /** Renders the rows back in {@code GC.class_histogram}'s format, so {@link #parse} reads them. */
+  public String toText() {
+    var rows = new StringBuilder();
+    int i = 1;
+    for (Entry e : entries) {
+      rows.append("%5d: %13d %14d  %s%n".formatted(i++, e.instances(), e.bytes(), e.className()));
+    }
+    return rows.toString();
+  }
+
   public long totalBytes() {
     return entries.stream().mapToLong(Entry::bytes).sum();
   }

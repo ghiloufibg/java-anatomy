@@ -149,6 +149,84 @@ four-allocation-site workload) — unsurprising, since all three insert the iden
 own error bars, not a meaningful ranking. A longer profile (`-wi 5 -i 10`, JMH's own default) would
 be needed before treating any ordering among the three as real.
 
+## Putting the agent to work: which code would a JVM flag save memory in? (`attribution/`)
+
+Phase 2's `FootprintEstimator` (`jvm-internals/.../footprint/estimate/`) predicts, class by
+class, how a live heap changes under each JVM flag set (compact object headers, no compressed
+oops, and so on). `attribution/` joins that prediction with this agent's allocation sites, so
+the answer names code, not just classes:
+
+- **`AllocationSites`**: parses the report `AllocationAgent` prints at exit
+  (`owner.method:type = count`). It maps the agent's bytecode-level type labels (`byte[]`,
+  `java/lang/Object[]`, `[I[]`, `[[I`) to histogram names (`[B`, `[Ljava.lang.Object;`, `[[I`).
+- **`AllocationAttribution`**: for each class whose footprint changes, it gives the application
+  sites their share, split by allocation count. The share is `min(1, seen allocations / live
+  instances)`, and the rest is reported as **allocated where the agent doesn't look**. The parts
+  always add up to the estimate exactly, rounding included.
+- **`SavingsAttributionReport`**: the CLI. With no arguments, it runs Phase 2's `HistogramProbe`
+  under the real agent (asm, instrumenting `OrderGraph` only) and prints the tables below.
+- **`AgentJar`**: builds the `-javaagent` jar from the compiled classes. It moved out of the
+  tests' `AgentProcessSupport`, which now delegates to it, so the CLI can use it too.
+
+```
+mvn -q install -DskipTests -pl jvm-internals -am      # once: puts jvm-internals in ~/.m2
+mvn -q -pl compiler-tooling-profilers compile exec:exec \
+    -Dexec.mainClass=dev.sevenrungs.compilertooling.profiler.attribution.SavingsAttributionReport
+```
+
+(`-am` can't be combined with `exec:exec` here: it would try to run the main class in the parent
+POM and in `jvm-internals` too.)
+
+Against a real application: run it under the agent (`-javaagent:profilers.jar=asm:com.acme.`,
+report on stdout at exit) and capture `jcmd <pid> GC.class_histogram` while it runs. Then pass
+both files: `SavingsAttributionReport app.histo agent.txt DEFAULT path/to/app.jar`.
+
+Captured on JDK 25.0.1, 250k orders:
+
+| Target configuration | Total change | In your code | Allocated elsewhere |
+|---|---:|---:|---:|
+| compact object headers | -18.1 MB | -9.5 MB (53%) | -8.6 MB |
+| no compressed class pointers | +8.6 MB | +1.9 MB (22%) | +6.7 MB |
+| no compressed oops (heap > 32 GB) | +22.9 MB | +11.4 MB (50%) | +11.4 MB |
+| 16-byte object alignment | +10.5 MB | +1.9 MB (18%) | +8.6 MB |
+
+Compact headers, by site: `OrderGraph.order` allocating `LineItem` (750,000, −5.7 MB), `HashMap`
+(250,000, −1.9 MB) and `Order` (250,000, −1.9 MB). Allocated where the agent doesn't look:
+
+- `HashMap$Node` (−3.8 MB), made inside `HashMap.put`;
+- `Long` (−1.9 MB), boxed inside `Long.valueOf`;
+- the `byte[]`, `Object[]` and `HashMap$Node[]` behind `String`, `ArrayList` and `HashMap`
+  (−1.0 MB each).
+
+**The finding: about half the saving is in objects the JDK allocates on your code's behalf.**
+`AllocationAgent` only sees `new` instructions in the classes it instruments, and it skips
+`<init>`/`<clinit>`. So a `HashMap$Node` your `map.put` causes, or the `Object[]` inside the
+`ArrayList` you created, appears with 0 allocations seen. The attribution reports that instead of
+hiding it. Crediting those to the calling line would need stack traces, for instance from JFR's
+`jdk.ObjectAllocationSample`, which this agent doesn't collect.
+
+The one assumption: the agent counts **allocations** and the histogram counts **survivors**, so
+the attribution assumes a class's objects survive in the same proportion whichever site made
+them. A site whose objects all die young can be credited with savings that belong to a
+longer-lived site of the same class.
+
+Tests:
+
+- `SavingsAttributionReportTest` (about 7 child JVMs, ~12 s) runs the full chain under the real
+  agent. It checks that:
+  - the agent counted exactly `N` `Order`s, `3N` `LineItem`s and `N` `HashMap`s;
+  - for every configuration, attributed + unattributed equals the estimated change;
+  - `order()` is credited exactly −8 B × 3N for `LineItem` under compact headers;
+  - `HashMap$Node` and `Long` show up as unattributed with 0 allocations seen, not lost;
+  - the attributed share of the compact-header saving is about half.
+- `AllocationAttributionTest` covers the arithmetic without a JVM: fully seen, never seen and
+  partly seen classes, more allocations than survivors, rounding, unchanged classes.
+- `AllocationSitesTest` covers report parsing and every type-label mapping.
+
+This module now depends on `jvm-internals`: build it from the root, or with `-am` when using
+`-pl` for `verify`. The dependency and JOL are excluded from the shaded `profilers.jar`, so the agent jar is
+unchanged.
+
 ## Testing strategy
 
 - `AllocationAgentTest` / `InstrumenterAgreementTest` / `AllocationBenchmarkSmokeTest` all fork

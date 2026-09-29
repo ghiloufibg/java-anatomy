@@ -57,6 +57,13 @@
       <version>${jmh.version}</version>
     </dependency>
     <dependency>
+      <!-- the footprint estimator (live histogram + size oracle) that AllocationAttribution joins
+           the agent's allocation sites against; kept out of the shaded agent jar below -->
+      <groupId>dev.sevenrungs</groupId>
+      <artifactId>jvm-internals</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
@@ -80,6 +87,38 @@
         </configuration>
       </plugin>
       <plugin>
+        <!-- computes the runtime classpath into a property for exec:exec below, the same way
+             jvm-internals does: SavingsAttributionReport forks child JVMs on its own
+             java.class.path, which under exec:java would be Maven's, not this module's -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.11.0</version>
+        <executions>
+          <execution>
+            <id>build-classpath</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>build-classpath</goal>
+            </goals>
+            <configuration>
+              <outputProperty>profilers.runtimeClasspath</outputProperty>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <configuration>
+          <executable>java</executable>
+          <arguments>
+            <argument>-cp</argument>
+            <argument>${project.build.outputDirectory}${path.separator}${profilers.runtimeClasspath}</argument>
+            <argument>${exec.mainClass}</argument>
+          </arguments>
+        </configuration>
+      </plugin>
+      <plugin>
         <!-- One shaded jar carrying BOTH manifest entries: Premain-Class so
              `-javaagent:profilers.jar=asm` works, and Main-Class so `java -jar profilers.jar`
              runs the JMH benchmark - a combination real APM agent jars often use. -->
@@ -93,6 +132,13 @@
             </goals>
             <configuration>
               <finalName>profilers</finalName>
+              <artifactSet>
+                <!-- attribution-only dependencies: the agent itself never needs them -->
+                <excludes>
+                  <exclude>dev.sevenrungs:jvm-internals</exclude>
+                  <exclude>org.openjdk.jol:jol-core</exclude>
+                </excludes>
+              </artifactSet>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>org.openjdk.jmh.Main</mainClass>

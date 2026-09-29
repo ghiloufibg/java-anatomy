@@ -22,7 +22,9 @@ public final class HistogramProbe {
 
   public static void main(String[] args) {
     sink = OrderGraph.build(Integer.parseInt(args[0]));
-    String histogram = histogramText();
+    // rendered from the parsed rows, not printed raw, so the parent parses exactly what the child
+    // saw and the markers can't be confused with a class name
+    String histogram = LiveHistogram.ofThisJvm().toText();
     System.out.println(BEGIN);
     System.out.println(histogram);
     System.out.println(END);
@@ -31,23 +33,19 @@ public final class HistogramProbe {
 
   /** Forks the probe under {@code config} holding {@code orders} orders; returns its histogram. */
   public static LiveHistogram capture(JvmMemoryConfig config, int orders) {
-    String output = ChildJvm.run(config, "", HistogramProbe.class, String.valueOf(orders));
+    return fromOutput(ChildJvm.run(config, "", HistogramProbe.class, String.valueOf(orders)));
+  }
+
+  /**
+   * The histogram a probe printed, from its full output - which may carry other lines around it,
+   * such as a {@code -javaagent}'s own report printed at shutdown.
+   */
+  public static LiveHistogram fromOutput(String output) {
     int begin = output.indexOf(BEGIN);
     int end = output.indexOf(END);
     if (begin < 0 || end < begin) {
       throw new IllegalStateException("no histogram in probe output:\n" + output);
     }
     return LiveHistogram.parse(output.substring(begin + BEGIN.length(), end));
-  }
-
-  private static String histogramText() {
-    // re-render the parsed rows rather than printing raw text, so the markers can't be confused
-    // with a class name and the parent parses exactly what the child saw
-    var rows = new StringBuilder();
-    int i = 1;
-    for (var e : LiveHistogram.ofThisJvm().entries()) {
-      rows.append("%5d: %13d %14d  %s%n".formatted(i++, e.instances(), e.bytes(), e.className()));
-    }
-    return rows.toString();
   }
 }

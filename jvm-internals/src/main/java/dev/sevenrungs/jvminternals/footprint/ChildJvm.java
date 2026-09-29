@@ -26,6 +26,19 @@ public final class ChildJvm {
    */
   public static String run(
       JvmMemoryConfig config, String extraClasspath, Class<?> mainClass, String... args) {
+    return run(config, List.of(), extraClasspath, mainClass, args);
+  }
+
+  /**
+   * As {@link #run(JvmMemoryConfig, String, Class, String...)}, with extra JVM flags added after
+   * the configuration's own - a {@code -javaagent:...}, for instance.
+   */
+  public static String run(
+      JvmMemoryConfig config,
+      List<String> extraJvmFlags,
+      String extraClasspath,
+      Class<?> mainClass,
+      String... args) {
     String classpath = System.getProperty("java.class.path");
     if (!extraClasspath.isEmpty()) {
       classpath += System.getProperty("path.separator") + extraClasspath;
@@ -39,6 +52,7 @@ public final class ChildJvm {
     command.add("--add-opens");
     command.add("java.base/java.lang=ALL-UNNAMED");
     command.addAll(config.flags());
+    command.addAll(extraJvmFlags);
     command.add("-cp");
     command.add(classpath);
     command.add(mainClass.getName());
