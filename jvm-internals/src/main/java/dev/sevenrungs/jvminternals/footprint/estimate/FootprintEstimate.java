@@ -16,8 +16,13 @@ public record FootprintEstimate(
     JvmMemoryConfig source, JvmMemoryConfig target, List<ClassEstimate> classes) {
 
   public enum Kind {
+    /** A plain object: size from the oracle's real layout, exact. */
     OBJECT,
+    /** An array estimated from its average length, assuming uniformly spread padding. */
     ARRAY,
+    /** An array re-laid out from the real lengths of sampled live instances. */
+    SAMPLED_ARRAY,
+    /** A class the oracle couldn't load (hidden classes, lambdas): carried over unchanged. */
     UNRESOLVED
   }
 
@@ -61,7 +66,7 @@ public record FootprintEstimate(
 
   /** The part of the change that is estimated: arrays, whose lengths the histogram doesn't give. */
   public long arrayDelta() {
-    return deltaOf(Kind.ARRAY);
+    return deltaOf(Kind.ARRAY) + deltaOf(Kind.SAMPLED_ARRAY);
   }
 
   public long uncertaintyBytes() {

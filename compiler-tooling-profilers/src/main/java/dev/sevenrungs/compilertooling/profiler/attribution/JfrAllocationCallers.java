@@ -1,5 +1,6 @@
 package dev.sevenrungs.compilertooling.profiler.attribution;
 
+import dev.sevenrungs.jvminternals.footprint.estimate.OldObjectRecording;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
@@ -49,21 +50,11 @@ public record JfrAllocationCallers(Map<String, Map<String, Long>> weightByClassA
   }
 
   /**
-   * JVM flags that record old-object samples with allocation stacks into {@code recording}, dumped
-   * at exit. The small fixed TLAB is a sampling-density knob only - it doesn't change object
-   * layout: with the default adaptive TLABs a short run gets a few dozen samples, with 4 KB ones
-   * thousands. The queue size is how many sampled live objects JFR keeps (default 256).
+   * JVM flags that record old-object samples into {@code recording}: see {@link
+   * OldObjectRecording}.
    */
   public static List<String> recordingFlags(Path recording) {
-    return List.of(
-        "-XX:FlightRecorderOptions:old-object-queue-size=100000",
-        "-XX:StartFlightRecording:filename="
-            + recording
-            + ",jdk.OldObjectSample#enabled=true"
-            + ",jdk.OldObjectSample#stackTrace=true"
-            + ",jdk.OldObjectSample#cutoff=0s", // no path-to-GC-roots search: only stacks needed
-        "-XX:TLABSize=4k",
-        "-XX:-ResizeTLAB");
+    return OldObjectRecording.flags(recording);
   }
 
   /**

@@ -36,8 +36,12 @@ import java.util.Map;
  *   jcmd &lt;pid&gt; GC.class_histogram &gt; app.histo
  *   java -cp jvm-internals/target/classes:$JOL_JAR \
  *       dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimator \
- *       app.histo DEFAULT path/to/app.jar
+ *       app.histo DEFAULT path/to/app.jar [app.jfr]
  * </pre>
+ *
+ * <p>The optional {@code app.jfr} is an {@link OldObjectRecording} of the same application: with
+ * it, arrays are re-laid out from their sampled real lengths ({@link ArrayLengthSamples}) instead
+ * of the uniform-padding estimate.
  *
  * <p>A whole-heap histogram also counts the JDK's own startup objects. Configurations that don't
  * match the JDK's default CDS archive ({@code -XX:-UseCompressedClassPointers}, {@code
@@ -50,33 +54,40 @@ import java.util.Map;
  * measured table.
  */
 public final class FootprintEstimator {
+  /** Fewer sampled lengths than this and an array class falls back to the uniform estimate. */
+  static final int MIN_ARRAY_SAMPLES = 10;
+
   private FootprintEstimator() {}
 
   public static void main(String[] args) throws IOException {
     LiveHistogram histogram;
+    ArrayLengthSamples arrays;
     JvmMemoryConfig source;
     String classpath;
     if (args.length == 0 || args[0].isBlank()) {
       source = JvmMemoryConfig.DEFAULT;
       classpath = "";
       // minus an idle probe: the orders' own live set, without the JDK's startup objects
-      histogram =
-          HistogramProbe.capture(source, LoadProfile.MEDIUM.orders())
-              .minus(HistogramProbe.capture(source, 0));
+      var live = HistogramProbe.sampledLiveSet(source, LoadProfile.MEDIUM.orders());
+      histogram = live.histogram();
+      arrays = live.arrays();
       System.out.printf(
           "Histogram: HistogramProbe's live set for %,d orders (minus an idle probe), captured"
-              + " under %s%n%n",
+              + " under %s, array lengths sampled by JFR%n%n",
           LoadProfile.MEDIUM.orders(), source);
     } else {
       histogram = LiveHistogram.parse(Files.readString(Path.of(args[0])));
       source = args.length > 1 ? JvmMemoryConfig.valueOf(args[1]) : JvmMemoryConfig.DEFAULT;
       classpath = args.length > 2 ? args[2] : "";
+      arrays =
+          args.length > 3 ? ArrayLengthSamples.read(Path.of(args[3])) : ArrayLengthSamples.none();
       System.out.printf("Histogram: %s, captured under %s%n%n", args[0], source);
     }
 
-    Map<JvmMemoryConfig, FootprintEstimate> estimates = estimateAll(histogram, source, classpath);
+    Map<JvmMemoryConfig, FootprintEstimate> estimates =
+        estimateAll(histogram, arrays, source, classpath);
     System.out.println(
-        "| Target configuration | Heap now | Predicted | Change | Objects (exact) | Arrays (est.)"
+        "| Target configuration | Heap now | Predicted | Change | Objects (exact) | Arrays"
             + " | +/- | Unresolved |");
     System.out.println("|---|---:|---:|---:|---:|---:|---:|---:|");
     for (FootprintEstimate e : estimates.values()) {
@@ -101,7 +112,11 @@ public final class FootprintEstimator {
         System.out.printf(
             "| %s%s | %,d | %s | %s | %s |%n",
             c.className(),
-            c.kind() == Kind.ARRAY ? " (est.)" : "",
+            switch (c.kind()) {
+              case ARRAY -> " (est.)";
+              case SAMPLED_ARRAY -> " (sampled)";
+              default -> "";
+            },
             c.instances(),
             mb(c.bytesBefore()),
             mb(c.bytesAfter()),
@@ -113,13 +128,22 @@ public final class FootprintEstimator {
   /** Estimates every configuration other than {@code source}; one oracle JVM per configuration. */
   public static Map<JvmMemoryConfig, FootprintEstimate> estimateAll(
       LiveHistogram histogram, JvmMemoryConfig source, String extraClasspath) {
+    return estimateAll(histogram, ArrayLengthSamples.none(), source, extraClasspath);
+  }
+
+  /** As above, re-laying out arrays from sampled real lengths wherever there are enough samples. */
+  public static Map<JvmMemoryConfig, FootprintEstimate> estimateAll(
+      LiveHistogram histogram,
+      ArrayLengthSamples arrays,
+      JvmMemoryConfig source,
+      String extraClasspath) {
     List<String> names = histogram.entries().stream().map(LiveHistogram.Entry::className).toList();
     Layouts sourceLayouts = SizeOracle.measure(source, names, extraClasspath);
     Map<JvmMemoryConfig, FootprintEstimate> estimates = new EnumMap<>(JvmMemoryConfig.class);
     for (JvmMemoryConfig target : JvmMemoryConfig.values()) {
       if (target != source) {
         Layouts targetLayouts = SizeOracle.measure(target, names, extraClasspath);
-        estimates.put(target, estimate(histogram, sourceLayouts, targetLayouts));
+        estimates.put(target, estimate(histogram, arrays, sourceLayouts, targetLayouts));
       }
     }
     return estimates;
@@ -128,15 +152,24 @@ public final class FootprintEstimator {
   /** The pure part: no JVMs forked, just the two layout tables applied to the histogram. */
   public static FootprintEstimate estimate(
       LiveHistogram histogram, Layouts source, Layouts target) {
+    return estimate(histogram, ArrayLengthSamples.none(), source, target);
+  }
+
+  /** The pure part, with sampled array lengths where available. */
+  public static FootprintEstimate estimate(
+      LiveHistogram histogram, ArrayLengthSamples arrays, Layouts source, Layouts target) {
     List<ClassEstimate> classes = new ArrayList<>();
     for (LiveHistogram.Entry e : histogram.entries()) {
+      List<Integer> lengths = arrays.lengthsOf(e.className());
       classes.add(
-          e.isArray()
-              ? estimateArray(e, source, target)
-              : estimateObject(
+          !e.isArray()
+              ? estimateObject(
                   e,
                   source.objectSizes().get(e.className()),
-                  target.objectSizes().get(e.className())));
+                  target.objectSizes().get(e.className()))
+              : lengths.size() >= MIN_ARRAY_SAMPLES
+                  ? estimateSampledArray(e, lengths, source, target)
+                  : estimateArray(e, source, target));
     }
     return new FootprintEstimate(source.config(), target.config(), classes);
   }
@@ -180,6 +213,43 @@ public final class FootprintEstimator {
         e.bytes(),
         after,
         Math.round(e.instances() * perArray));
+  }
+
+  /**
+   * Re-lays out each sampled length exactly under both layouts and scales the observed bytes by the
+   * mean size ratio. JFR samples at TLAB refills, so an array is sampled roughly in proportion to
+   * its size: a plain mean over samples is then a byte-weighted mean, which is what turns observed
+   * bytes into predicted bytes. The uncertainty is two standard errors of that mean - zero when
+   * every sampled array has the same length, as {@code ArrayList(3)}'s {@code Object[3]} all do.
+   */
+  private static ClassEstimate estimateSampledArray(
+      LiveHistogram.Entry e, List<Integer> lengths, Layouts source, Layouts target) {
+    ArrayLayout s = source.arrays().get(e.className());
+    ArrayLayout t = target.arrays().get(e.className());
+    if (s == null || t == null) {
+      return estimateArray(e, source, target);
+    }
+    double[] ratios =
+        lengths.stream()
+            .mapToDouble(
+                len ->
+                    (double)
+                            roundUp(
+                                t.baseOffset() + (long) len * t.indexScale(), target.alignment())
+                        / roundUp(s.baseOffset() + (long) len * s.indexScale(), source.alignment()))
+            .toArray();
+    double mean = java.util.Arrays.stream(ratios).average().orElseThrow();
+    double variance =
+        java.util.Arrays.stream(ratios).map(r -> (r - mean) * (r - mean)).sum()
+            / Math.max(1, ratios.length - 1);
+    double standardError = Math.sqrt(variance / ratios.length);
+    return new ClassEstimate(
+        e.className(),
+        Kind.SAMPLED_ARRAY,
+        e.instances(),
+        e.bytes(),
+        Math.round(e.bytes() * mean),
+        Math.round(e.bytes() * 2 * standardError));
   }
 
   /**

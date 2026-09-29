@@ -3,6 +3,10 @@ package dev.sevenrungs.jvminternals.footprint.estimate;
 import dev.sevenrungs.jvminternals.footprint.ChildJvm;
 import dev.sevenrungs.jvminternals.footprint.JvmMemoryConfig;
 import dev.sevenrungs.jvminternals.footprint.OrderGraph;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * Child-JVM stand-in for "your application": holds {@code args[0]} orders live and prints its own
@@ -37,6 +41,42 @@ public final class HistogramProbe {
   /** Forks the probe under {@code config} holding {@code orders} orders; returns its histogram. */
   public static LiveHistogram capture(JvmMemoryConfig config, int orders) {
     return fromOutput(ChildJvm.run(config, "", HistogramProbe.class, String.valueOf(orders)));
+  }
+
+  /** An application live set, and the lengths of its arrays sampled by JFR in the same runs. */
+  public record SampledLiveSet(LiveHistogram histogram, ArrayLengthSamples arrays) {}
+
+  /**
+   * The orders' own live set under {@code config} - a probe holding {@code orders} orders minus an
+   * idle probe - with each run recorded by {@link OldObjectRecording} and the idle run's array
+   * samples subtracted too.
+   */
+  public static SampledLiveSet sampledLiveSet(JvmMemoryConfig config, int orders) {
+    try {
+      Path loaded = Files.createTempFile("probe-", ".jfr");
+      Path idle = Files.createTempFile("probe-idle-", ".jfr");
+      try {
+        LiveHistogram loadedHistogram = fromOutput(runRecorded(config, orders, loaded));
+        LiveHistogram idleHistogram = fromOutput(runRecorded(config, 0, idle));
+        return new SampledLiveSet(
+            loadedHistogram.minus(idleHistogram),
+            ArrayLengthSamples.read(loaded).minus(ArrayLengthSamples.read(idle)));
+      } finally {
+        Files.deleteIfExists(loaded);
+        Files.deleteIfExists(idle);
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  private static String runRecorded(JvmMemoryConfig config, int orders, Path recording) {
+    return ChildJvm.run(
+        config,
+        OldObjectRecording.flags(recording),
+        "",
+        HistogramProbe.class,
+        String.valueOf(orders));
   }
 
   /**

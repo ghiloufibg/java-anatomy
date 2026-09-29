@@ -2,6 +2,7 @@ package dev.sevenrungs.jvminternals.footprint.estimate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.sevenrungs.jvminternals.footprint.JvmMemoryConfig;
 import dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimate.ClassEstimate;
@@ -42,6 +43,21 @@ class FootprintEstimateMathTest {
           Map.of("java.lang.Long", 16L),
           Map.of("[B", new ArrayLayout(12, 1), "[J", new ArrayLayout(16, 8)),
           Set.of("java.util.regex.Pattern$$Lambda/0x80000002f"));
+
+  static final Layouts DEFAULT_OBJECT_ARRAYS =
+      new Layouts(
+          JvmMemoryConfig.DEFAULT,
+          8,
+          Map.of(),
+          Map.of("[Ljava.lang.Object;", new ArrayLayout(16, 4)),
+          Set.of());
+  static final Layouts COMPACT_OBJECT_ARRAYS =
+      new Layouts(
+          JvmMemoryConfig.COMPACT_HEADERS,
+          8,
+          Map.of(),
+          Map.of("[Ljava.lang.Object;", new ArrayLayout(12, 4)),
+          Set.of());
 
   @Test
   void parsesRowsStripsModulesAndSkipsHeaderAndTotal() {
@@ -120,6 +136,67 @@ class FootprintEstimateMathTest {
             LiveHistogram.parse(HISTOGRAM), DEFAULT_LAYOUTS, COMPACT_LAYOUTS);
     assertEquals(128, all.unresolvedBytes());
     assertEquals(all.bytesBefore(), LiveHistogram.parse(HISTOGRAM).totalBytes());
+  }
+
+  @Test
+  void sampledLengthsReLayOutArraysExactlyWhenTheyAreAllTheSame() {
+    // every ArrayList(3) holds an Object[3]: 16 + 3 x 4 = 28 -> 32 bytes by default, 12 + 12 = 24
+    // with compact headers. The uniform estimate would guess ~28; the samples know it's 24.
+    var objects = new LiveHistogram.Entry("[Ljava.lang.Object;", 1000, 32000);
+    var samples =
+        new ArrayLengthSamples(Map.of("[Ljava.lang.Object;", java.util.Collections.nCopies(50, 3)));
+    ClassEstimate c =
+        FootprintEstimator.estimate(
+                new LiveHistogram(List.of(objects)),
+                samples,
+                DEFAULT_OBJECT_ARRAYS,
+                COMPACT_OBJECT_ARRAYS)
+            .classes()
+            .getFirst();
+    assertEquals(Kind.SAMPLED_ARRAY, c.kind());
+    assertEquals(24000, c.bytesAfter());
+    assertEquals(0, c.uncertaintyBytes(), "identical lengths leave nothing to sample wrong");
+  }
+
+  @Test
+  void mixedSampledLengthsCarryAStandardErrorBand() {
+    var objects = new LiveHistogram.Entry("[Ljava.lang.Object;", 1000, 40000);
+    List<Integer> lengths = new java.util.ArrayList<>();
+    for (int i = 0; i < 20; i++) {
+      lengths.add(i % 2 == 0 ? 3 : 4); // Object[3]: 32 -> 24, Object[4]: 32 -> 32
+    }
+    ClassEstimate c =
+        FootprintEstimator.estimate(
+                new LiveHistogram(List.of(objects)),
+                new ArrayLengthSamples(Map.of("[Ljava.lang.Object;", lengths)),
+                DEFAULT_OBJECT_ARRAYS,
+                COMPACT_OBJECT_ARRAYS)
+            .classes()
+            .getFirst();
+    assertEquals(35000, c.bytesAfter(), "mean ratio (0.75 + 1) / 2 applied to the observed bytes");
+    assertTrue(c.uncertaintyBytes() > 0);
+  }
+
+  @Test
+  void tooFewSamplesFallBackToTheUniformEstimate() {
+    var objects = new LiveHistogram.Entry("[Ljava.lang.Object;", 1000, 32000);
+    var samples = new ArrayLengthSamples(Map.of("[Ljava.lang.Object;", List.of(3, 3, 3)));
+    ClassEstimate c =
+        FootprintEstimator.estimate(
+                new LiveHistogram(List.of(objects)),
+                samples,
+                DEFAULT_OBJECT_ARRAYS,
+                COMPACT_OBJECT_ARRAYS)
+            .classes()
+            .getFirst();
+    assertEquals(Kind.ARRAY, c.kind());
+  }
+
+  @Test
+  void subtractingIdleSamplesRemovesOneOccurrencePerBaselineSample() {
+    var loaded = new ArrayLengthSamples(Map.of("[B", List.of(9, 9, 9, 40, 17)));
+    var idle = new ArrayLengthSamples(Map.of("[B", List.of(40, 17, 9, 55)));
+    assertEquals(List.of(9, 9), loaded.minus(idle).lengthsOf("[B"));
   }
 
   @Test

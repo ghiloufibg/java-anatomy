@@ -131,14 +131,20 @@ linearly. `OrderGraphTest` pins the 14-objects-per-order claim with JOL.
 
 `FootprintComparison` measures a synthetic workload by restarting it under every flag set. You
 can't always restart a production service five times. `FootprintEstimator` predicts the same
-table from **one live class histogram** of the running application:
+table from **one live class histogram** of the running application, optionally sharpened by one
+JFR recording:
 
 ```
 jcmd <pid> GC.class_histogram > app.histo          # forces a full GC, counts live objects
 java -cp jvm-internals/target/classes:$JOL_JAR \
     dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimator \
-    app.histo DEFAULT path/to/app.jar              # source config, then the app's classpath
+    app.histo DEFAULT path/to/app.jar [app.jfr]    # source config, the app's classpath, and
+                                                   # optionally an old-object recording
 ```
+
+The recording, if given, comes from running the application with `OldObjectRecording.flags`:
+`jdk.OldObjectSample` enabled, a large old-object queue, and small fixed TLABs so there are
+enough samples.
 
 How it works:
 
@@ -150,50 +156,74 @@ How it works:
   asks JOL for each class's real size there. Arithmetic ("header − 4 bytes, rounded to 8") gets
   it wrong because fields are re-packed. For example, `Long` is 24 → 16 bytes with compact
   headers, where the arithmetic predicts 24 → 24.
+- **`ArrayLengthSamples`**: the lengths of sampled live arrays, read from the recording
+  (`jdk.OldObjectSample`'s `arrayElements`).
 - **`FootprintEstimator`**: applies the layouts to the histogram, with the precision each kind
   of class allows:
   - **objects:** exact;
-  - **arrays:** estimated from their average length, with a stated ± (the histogram doesn't
-    give individual lengths, so padding is assumed uniform);
+  - **arrays with at least 10 sampled lengths:** each sampled length is re-laid out exactly under
+    both layouts, and the observed bytes are scaled by the mean size ratio, with a band of two
+    standard errors;
+  - **other arrays:** estimated from their average length, assuming uniformly spread padding,
+    with a wider ±;
   - **hidden classes and lambdas:** left unchanged and reported, never silently dropped.
 
-With no arguments, it runs on a probe holding `MEDIUM`'s 250k orders, so it can be compared with
-the measured table above:
+With no arguments, it runs on a probe holding `MEDIUM`'s 250k orders, recorded by JFR, and
+compares with the real histograms of the same live set under each flag set:
 
-| Target configuration | Heap now | Predicted | Change | Objects (exact) | Arrays (est.) | +/- | Measured by `FootprintComparison` |
+| Target configuration | Heap now | Predicted | Change | Objects (exact) | Arrays (sampled) | +/- | Measured |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| compact object headers | 106.7 MB | 88.6 MB | -17.0% | -15.3 MB | -2.9 MB | 3.6 MB | -17.8% |
-| no compressed class pointers | 106.7 MB | 115.3 MB | +8.0% | +5.7 MB | +2.9 MB | 3.6 MB | +7.4% |
-| no compressed oops (heap > 32 GB) | 106.7 MB | 129.6 MB | +21.4% | +17.2 MB | +5.7 MB | 3.6 MB | +22.4% |
-| 16-byte object alignment | 106.7 MB | 117.2 MB | +9.8% | +7.6 MB | +2.9 MB | 6.4 MB | +7.4% |
+| compact object headers | 106.7 MB | 87.8 MB | -17.8% | -15.3 MB | -3.7 MB | 0.0 MB | 87.7 MB (-17.8%) |
+| no compressed class pointers | 106.7 MB | 114.5 MB | +7.2% | +5.7 MB | +2.0 MB | 0.0 MB | 114.5 MB (+7.2%) |
+| no compressed oops (heap > 32 GB) | 106.7 MB | 129.6 MB | +21.4% | +17.2 MB | +5.7 MB | 0.0 MB | 129.6 MB (+21.4%) |
+| 16-byte object alignment | 106.7 MB | 114.5 MB | +7.2% | +7.6 MB | +0.1 MB | 0.0 MB | 114.5 MB (+7.2%) |
+
+(`FootprintComparison`'s used-heap measurement, a different instrument, gives -17.8%, +7.4%,
++22.4% and +7.4% for the same live set.)
 
 It also prints the classes that change the most. For compact headers: `LineItem` −5.7 MB,
-`HashMap$Node` −3.8 MB, then `HashMap`, `Order` and `Long` at −1.9 MB each. That shows *where*
-the saving comes from in your own code.
+`HashMap$Node` −3.8 MB, then `HashMap`, `Order`, `Long`, `Object[]` (sampled) and `byte[]`
+(sampled) at about −1.9 MB each. That shows *where* the saving comes from in your own code.
 
-Two things found while validating it:
+Three things found while validating it:
 
-- **16-byte alignment is the least precise prediction** (+9.8% predicted vs +7.4% measured, still
-  inside its ±6.4 MB). That's where array padding weighs the most, and this workload's arrays all
-  have the same short lengths rather than uniformly spread ones. The band doubles for that
-  config because padding can reach 15 bytes instead of 7.
+- **Real arrays aren't uniformly padded.** Without samples, the arrays were the weakest part of
+  the estimate: 16-byte alignment came out at +9.8% predicted vs +7.2% measured. JFR showed why:
+  every `ArrayList(3)` holds an `Object[3]`, every `HashMap(4)` a table of 4, and every
+  `"ORD-" + id` is a `byte[]` of 8 or 9. Nothing is spread uniformly. With sampled lengths, the
+  worst error over 12 runs (3 loads × 4 configs) dropped from 2.3% to 0.42%, and at 250k orders
+  all four predictions match to 0.1 MB.
+- **The sampled band covers the sampling, not everything.** It's two standard errors of the
+  sampled size ratio: zero when every sampled array has the same length. The remaining error,
+  at most 0.42% and largest on the smallest live set, comes from the reference measurement: the
+  JDK objects that still differ between configurations after subtracting an idle probe.
 - **Compare what the application adds, not the whole heap.** `-XX:-UseCompressedClassPointers` and
   `-XX:ObjectAlignmentInBytes=16` don't match the JDK's default CDS archive, so those JVMs boot
   without it and start from a different set of the JDK's own objects. On a small live set, the
   whole-heap comparison was off by 17% for that reason alone. The tests therefore subtract an
-  idle JVM's histogram (`LiveHistogram.minus`) on both sides, and the error drops to 0–2.3%.
+  idle JVM's histogram (`LiveHistogram.minus`) on both sides. The same goes for JFR's samples,
+  which also cover the JDK's startup arrays (`ArrayLengthSamples.minus`).
 
 Tests:
 
-- `FootprintEstimatorTest` (about 15 child JVMs, ~10 s) predicts every configuration from one
-  default-flags histogram, then runs the same live set under each flag set. It asserts that:
-  - the real footprint falls inside the predicted band and within 3%;
-  - the predicted direction matches the measured one;
-  - the `Order` and `LineItem` bytes are predicted *exactly*;
-  - compact headers save the most on the classes JOL showed shrinking.
+- `FootprintEstimatorTest` (about 15 child JVMs, ~17 s) predicts every configuration from one
+  default-flags histogram and recording, then runs the same live set under each flag set.
+  - With uniform padding, it asserts that:
+    - the real footprint falls inside the predicted band and within 3%;
+    - the direction matches;
+    - the `Order` and `LineItem` bytes are predicted *exactly*;
+    - compact headers save the most on the classes JOL showed shrinking.
+  - With sampled lengths, it asserts that:
+    - the orders' three array classes are re-laid out from samples;
+    - every configuration is within 1%, and within its band plus 0.5% of measurement noise;
+    - for 16-byte alignment, the sampled prediction beats the uniform one.
 - `SizeOracleTest` pins the oracle's layouts (`Long` 24 → 16, `byte[]` base 16 → 12, `long[]`
   unchanged, 8-byte references without compressed oops, hidden classes reported as unresolved).
-- `FootprintEstimateMathTest` covers parsing and arithmetic without forking a JVM.
+- `FootprintEstimateMathTest` covers parsing and arithmetic without forking a JVM:
+  - identical sampled lengths give an exact result with a zero band;
+  - mixed lengths give a band;
+  - too few samples fall back to the uniform estimate;
+  - the idle subtraction removes one occurrence per baseline sample.
 
 To credit each class's change to the code that allocates it, see `attribution/` in
 [`compiler-tooling-profilers`](../compiler-tooling-profilers/README.md), which joins this

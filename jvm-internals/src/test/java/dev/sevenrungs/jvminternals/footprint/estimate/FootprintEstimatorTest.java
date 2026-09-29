@@ -33,13 +33,16 @@ class FootprintEstimatorTest {
 
   private LiveHistogram source;
   private Map<JvmMemoryConfig, FootprintEstimate> predicted;
+  private Map<JvmMemoryConfig, FootprintEstimate> sampled;
   private final Map<JvmMemoryConfig, LiveHistogram> actual = new EnumMap<>(JvmMemoryConfig.class);
 
   @BeforeAll
   @Timeout(300)
   void predictThenMeasureEveryConfiguration() {
-    source = liveSetUnder(JvmMemoryConfig.DEFAULT);
+    var live = HistogramProbe.sampledLiveSet(JvmMemoryConfig.DEFAULT, ORDERS);
+    source = live.histogram();
     predicted = FootprintEstimator.estimateAll(source, JvmMemoryConfig.DEFAULT, "");
+    sampled = FootprintEstimator.estimateAll(source, live.arrays(), JvmMemoryConfig.DEFAULT, "");
     for (JvmMemoryConfig target : predicted.keySet()) {
       actual.put(target, liveSetUnder(target));
     }
@@ -114,6 +117,54 @@ class FootprintEstimatorTest {
             .toList();
     assertTrue(movers.contains(OrderGraph.LineItem.class.getName()), movers.toString());
     assertTrue(movers.contains("java.util.HashMap$Node"), movers.toString());
+  }
+
+  @Test
+  void theOrdersArraysAreReLaidOutFromSampledLengths() {
+    var kinds =
+        sampled.get(JvmMemoryConfig.COMPACT_HEADERS).classes().stream()
+            .collect(
+                java.util.stream.Collectors.toMap(
+                    FootprintEstimate.ClassEstimate::className,
+                    FootprintEstimate.ClassEstimate::kind));
+    for (String array : List.of("[B", "[Ljava.lang.Object;", "[Ljava.util.HashMap$Node;")) {
+      assertEquals(FootprintEstimate.Kind.SAMPLED_ARRAY, kinds.get(array), array);
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = JvmMemoryConfig.class, mode = EnumSource.Mode.EXCLUDE, names = "DEFAULT")
+  void sampledArrayLengthsPredictWithinOnePercent(JvmMemoryConfig target) {
+    // measured over 12 runs (3 loads x 4 configs): at most 0.42% off, against 2.3% for the
+    // uniform-padding estimate. The band covers only the array-length sampling; the half percent
+    // on top is the reference measurement's own noise - the JDK objects that still differ
+    // between configurations after subtracting an idle probe, largest on small live sets.
+    FootprintEstimate e = sampled.get(target);
+    long real = actual.get(target).totalBytes();
+    long error = e.bytesAfter() - real;
+    assertAll(
+        () ->
+            assertTrue(
+                Math.abs(error) <= e.uncertaintyBytes() + 0.005 * real,
+                () ->
+                    "%s: predicted %,d B +/- %,d, measured %,d B"
+                        .formatted(target, e.bytesAfter(), e.uncertaintyBytes(), real)),
+        () ->
+            assertTrue(
+                Math.abs(error) <= 0.01 * real,
+                () -> "%s: off by %.2f%%".formatted(target, 100.0 * error / real)));
+  }
+
+  @Test
+  void sampledLengthsBeatTheUniformAssumptionWhereItIsWorst() {
+    // 16-byte alignment: padding reaches 15 bytes, and this workload's arrays all have the same
+    // few short lengths - nothing like uniformly spread
+    long real = actual.get(JvmMemoryConfig.ALIGNMENT_16).totalBytes();
+    long uniformError = Math.abs(predicted.get(JvmMemoryConfig.ALIGNMENT_16).bytesAfter() - real);
+    long sampledError = Math.abs(sampled.get(JvmMemoryConfig.ALIGNMENT_16).bytesAfter() - real);
+    assertTrue(
+        sampledError < uniformError,
+        "sampled off by %,d B, uniform by %,d B".formatted(sampledError, uniformError));
   }
 
   private static LiveHistogram liveSetUnder(JvmMemoryConfig config) {
