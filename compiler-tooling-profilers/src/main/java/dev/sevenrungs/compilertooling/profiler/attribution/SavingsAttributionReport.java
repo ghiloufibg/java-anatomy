@@ -8,6 +8,7 @@ import dev.sevenrungs.jvminternals.footprint.ChildJvm;
 import dev.sevenrungs.jvminternals.footprint.JvmMemoryConfig;
 import dev.sevenrungs.jvminternals.footprint.LoadProfile;
 import dev.sevenrungs.jvminternals.footprint.OrderGraph;
+import dev.sevenrungs.jvminternals.footprint.estimate.ArrayLengthSamples;
 import dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimate;
 import dev.sevenrungs.jvminternals.footprint.estimate.FootprintEstimator;
 import dev.sevenrungs.jvminternals.footprint.estimate.HistogramProbe;
@@ -50,11 +51,15 @@ public final class SavingsAttributionReport {
   private SavingsAttributionReport() {}
 
   /**
-   * A live set, the agent's exact view of how it was allocated, and JFR's sampled view of who
-   * caused the allocations the agent couldn't see - all from the same kind of run.
+   * A live set, the agent's exact view of how it was allocated, and JFR's sampled views of who
+   * caused the allocations the agent couldn't see and how long the live arrays are - all from the
+   * same kind of run.
    */
   public record Capture(
-      LiveHistogram liveSet, AllocationSites sites, JfrAllocationCallers callers) {}
+      LiveHistogram liveSet,
+      AllocationSites sites,
+      JfrAllocationCallers callers,
+      ArrayLengthSamples arrays) {}
 
   public static void main(String[] args) throws IOException {
     Capture capture;
@@ -70,16 +75,22 @@ public final class SavingsAttributionReport {
     } else {
       source = args.length > 2 ? JvmMemoryConfig.valueOf(args[2]) : source;
       classpath = args.length > 3 ? args[3] : "";
+      boolean recorded = args.length > 5;
       capture =
           new Capture(
               LiveHistogram.parse(Files.readString(Path.of(args[0]))),
               AllocationSites.parse(Files.readString(Path.of(args[1]))),
-              args.length > 5
+              recorded
                   ? JfrAllocationCallers.read(Path.of(args[4]), args[5])
-                  : JfrAllocationCallers.none());
+                  : JfrAllocationCallers.none(),
+              recorded ? ArrayLengthSamples.read(Path.of(args[4])) : ArrayLengthSamples.none());
     }
 
-    Map<JvmMemoryConfig, AllocationAttribution> byConfig = attributeAll(capture, source, classpath);
+    print(attributeAll(capture, source, classpath));
+  }
+
+  /** Prints the per-configuration summary, then compact headers by site, caller and remainder. */
+  public static void print(Map<JvmMemoryConfig, AllocationAttribution> byConfig) {
     System.out.println(
         "| Target configuration | Total change | Agent sites (exact) | Via JFR stacks (sampled)"
             + " | Unattributed |");
@@ -130,7 +141,7 @@ public final class SavingsAttributionReport {
       Capture capture, JvmMemoryConfig source, String extraClasspath) {
     Map<JvmMemoryConfig, AllocationAttribution> result = new EnumMap<>(JvmMemoryConfig.class);
     Map<JvmMemoryConfig, FootprintEstimate> estimates =
-        FootprintEstimator.estimateAll(capture.liveSet(), source, extraClasspath);
+        FootprintEstimator.estimateAll(capture.liveSet(), capture.arrays(), source, extraClasspath);
     estimates.forEach(
         (target, estimate) ->
             result.put(
@@ -156,7 +167,8 @@ public final class SavingsAttributionReport {
             HistogramProbe.fromOutput(loaded).minus(HistogramProbe.fromOutput(idle)),
             AllocationSites.parse(loaded),
             JfrAllocationCallers.read(recording, DEMO_PREFIX)
-                .minus(JfrAllocationCallers.read(idleRecording, DEMO_PREFIX)));
+                .minus(JfrAllocationCallers.read(idleRecording, DEMO_PREFIX)),
+            ArrayLengthSamples.read(recording).minus(ArrayLengthSamples.read(idleRecording)));
       } finally {
         Files.deleteIfExists(recording);
         Files.deleteIfExists(idleRecording);

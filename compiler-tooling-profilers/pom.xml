@@ -144,6 +144,7 @@
                   <mainClass>org.openjdk.jmh.Main</mainClass>
                   <manifestEntries>
                     <Premain-Class>dev.sevenrungs.compilertooling.profiler.AllocationAgent</Premain-Class>
+                    <Agent-Class>dev.sevenrungs.compilertooling.profiler.AllocationAgent</Agent-Class>
                     <Can-Retransform-Classes>true</Can-Retransform-Classes>
                   </manifestEntries>
                 </transformer>
