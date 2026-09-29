@@ -40,7 +40,10 @@ class SavingsAttributionReportTest {
   @Timeout(300)
   void runUnderTheAgentThenEstimateAndAttribute() {
     capture = SavingsAttributionReport.captureDemo(ORDERS);
-    estimates = FootprintEstimator.estimateAll(capture.liveSet(), JvmMemoryConfig.DEFAULT, "");
+    // the same estimate attributeAll works from: sampled array lengths included
+    estimates =
+        FootprintEstimator.estimateAll(
+            capture.liveSet(), capture.arrays(), JvmMemoryConfig.DEFAULT, "");
     attributions = SavingsAttributionReport.attributeAll(capture, JvmMemoryConfig.DEFAULT, "");
   }
 

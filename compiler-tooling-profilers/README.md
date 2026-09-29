@@ -276,6 +276,84 @@ Tests:
   - rounding and unchanged classes.
 - `AllocationSitesTest` covers report parsing and every type-label mapping.
 
+### Without a restart: attaching to a running JVM (`LiveAttribution`)
+
+Everything above needs the application restarted with `-javaagent` and JFR flags. Production
+rarely allows that. `LiveAttribution` produces the same report from a JVM that is already
+running:
+
+```
+java -cp ... dev.sevenrungs.compilertooling.profiler.attribution.LiveAttribution <pid> com.acme. 60
+```
+
+What it does:
+
+1. It reads the target's layout flags (`jcmd VM.flags`) to know which `JvmMemoryConfig` it runs
+   as. Flag combinations the enum doesn't model are refused rather than approximated. It also
+   reads the target's classpath (Attach API), so the size oracle can load its classes.
+2. It starts a JFR old-object recording (`jcmd JFR.start jdk.OldObjectSample#enabled=true …`)
+   and attaches `AllocationAgent` with `start:classfile:<prefix>`. The new `agentmain`
+   re-instruments the already loaded classes (`retransformClasses`: only method bodies change,
+   which JVMTI allows). It uses the `classfile` implementation because the target has no ASM or
+   Byte Buddy, while the JDK's ClassFile API is always there.
+3. After the window, it sends `stop`, which removes the transformer and retransforms again, so
+   the original bytecode is back. It then reads the frozen counts (`report:<file>`, a file, never
+   the application's stdout), takes the histogram (`jcmd GC.class_histogram`) and stops the
+   recording. On failure, the same cleanup still runs.
+
+Run on a `ChurningOrders` target (250k live orders, continuously replaced, like sessions or an
+evicting cache), 10-second window, target never restarted:
+
+| Target configuration | Total change | Agent sites (exact) | Via JFR stacks (sampled) | Unattributed |
+|---|---:|---:|---:|---:|
+| compact object headers | -18.5 MB | -9.5 MB (52%) | -6.8 MB (37%) | -2.1 MB (11%) |
+| no compressed class pointers | +9.0 MB | +1.9 MB (21%) | +6.9 MB (77%) | +0.2 MB (2%) |
+| no compressed oops (heap > 32 GB) | +25.2 MB | +11.5 MB (45%) | +11.9 MB (47%) | +1.8 MB (7%) |
+| 16-byte object alignment | +10.9 MB | +1.9 MB (18%) | +6.9 MB (63%) | +2.1 MB (19%) |
+
+What a late attach can and can't see:
+
+- **Only the window's allocations.** The agent counts, and JFR samples, only what is allocated
+  after the attach. That's no loss for data that turns over: every live `LineItem` above was
+  reallocated during the window, and `order()` gets exactly its whole change. Data built once at
+  startup stays **unattributed**, since `min(1, seen / live)` caps what the sites get. The
+  report says so rather than guessing. The estimate itself is unaffected: it uses the whole
+  histogram.
+- **Sparser JFR samples.** The old-object queue (256 samples by default) and the TLAB size are
+  fixed at launch. Here that missed `Long` entirely, which is the 11% left under compact headers;
+  with the flags at launch, the same classes were fully attributed. Arrays with fewer than 10
+  samples fall back to the uniform-padding estimate. If you can restart once, launch with
+  `OldObjectRecording.flags`.
+- **The JDK warns on every dynamic agent load** (JEP 451) and will refuse them by default in a
+  future release. Start services that may be profiled this way with
+  `-XX:+EnableDynamicAgentLoading`.
+
+Two real bugs, both caught by `LiveAttributionTest` before this was committed:
+
+- **`stop` didn't stop anything.** Each `loadAgent` call gets a *new* `Instrumentation` instance,
+  and a transformer can only be removed through the instance it was added to. Removing it
+  through `stop`'s own instance silently returned `false`, and the retransformation then ran the
+  still-registered transformer again. Counts kept climbing after the "detach". The agent now keeps
+  `start`'s instance and fails loudly if the removal doesn't happen.
+- **Counts read while running aren't consistent with each other.** Read mid-window, the counters
+  are sampled one after another from a loop making millions of calls a second, and the 1:3
+  `Order`:`LineItem` ratio drifted by hundreds. The window is now closed (`stop`) before
+  `report`, so the counts are frozen: the ratio holds to within the call in progress.
+
+Tests:
+
+- `LiveAttributionTest` (~20 s) starts `ChurningOrders` without any agent, attaches for 3
+  seconds, and checks:
+  - the detected flags (`DEFAULT`) and classpath;
+  - `N` `Order`s, `3N` `LineItem`s and `N` `HashMap`s counted, to within the call in progress;
+  - `LineItem` and `Order` attributed exactly to `order()`;
+  - sites + callers + unattributed equal the estimate for every configuration;
+  - once detached, a second attach sees counts that no longer move while the application keeps
+    running.
+- `LiveAttributionConfigTest` covers flag detection for all five configurations, refusal of
+  unmodeled combinations, and resolving relative classpath entries against the target's working
+  directory.
+
 This module now depends on `jvm-internals`: build it from the root, or with `-am` when using `-pl`
 for `verify`. The dependency and JOL are excluded from the shaded `profilers.jar`, so the agent jar
 is unchanged.

@@ -43,6 +43,7 @@ public final class AgentJar {
     Manifest manifest = new Manifest();
     manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
     manifest.getMainAttributes().putValue("Premain-Class", AllocationAgent.class.getName());
+    manifest.getMainAttributes().putValue("Agent-Class", AllocationAgent.class.getName());
     manifest.getMainAttributes().putValue("Can-Retransform-Classes", "true");
 
     try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(agentJar), manifest);
